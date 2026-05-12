@@ -59,7 +59,13 @@ impl Trace {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let bytes = std::fs::read(path)?;
-        let trace = parse_chrome_trace_bytes(bytes, path)?;
+        // simd-json caps inputs at ~4 GiB. Fall back to serde_json for very
+        // large traces (the unifolm rank dumps are 6 GiB each).
+        let trace = if bytes.len() > 3 * 1024 * 1024 * 1024 {
+            parse_chrome_trace_bytes_serde(&bytes, path)?
+        } else {
+            parse_chrome_trace_bytes(bytes, path)?
+        };
         Ok(trace)
     }
 
@@ -149,6 +155,11 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
     let mut streams: StreamMap = IndexMap::new();
     let mut metadata: AHashMap<String, serde_json::Value> = AHashMap::new();
 
+    // Two-pass: first pass collects every event; we need to know the rank's
+    // minimum ts so we can normalise (matches PerFlow-AI Python behaviour
+    // where each rank is shifted to its own time origin).
+    let mut staging: Vec<StagingEvent> = Vec::with_capacity(trace_events.len());
+
     for raw in trace_events {
         let obj = match raw {
             Value::Object(o) => o,
@@ -161,8 +172,7 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
         let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
 
         let pid: i64 = obj.get("pid").and_then(|v| v.as_i64()).unwrap_or(0);
-        let tid_value = obj.get("tid").cloned().unwrap_or(Value::Static(simd_json::StaticNode::Null));
-        let tid: String = match tid_value {
+        let raw_tid: String = match obj.get("tid").cloned().unwrap_or(Value::Static(simd_json::StaticNode::Null)) {
             Value::String(s) => s.into(),
             Value::Static(simd_json::StaticNode::I64(n)) => n.to_string(),
             Value::Static(simd_json::StaticNode::U64(n)) => n.to_string(),
@@ -175,23 +185,58 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
             continue;
         }
 
+        // Normalise tid for HIP/ROCm and PyTorch GPU traces:
+        //   * if `args.stream` is present, it is a GPU stream id   -> tid := "stream <id>"
+        //   * else if cat == "gpu_user_annotation",                  -> tid := "stream <tid>"
+        //   * else leave as-is.
+        let stream_in_args = obj.get("args").and_then(|args| match args {
+            Value::Object(o) => o.get("stream").and_then(|v| v.as_i64().map(|n| n.to_string()).or_else(|| v.as_str().map(str::to_owned))),
+            _ => None,
+        });
+        let cat = obj.get("cat").and_then(|v| v.as_str()).map(str::to_owned);
+
+        let tid = if let Some(stream) = stream_in_args {
+            format!("stream {}", stream)
+        } else if cat.as_deref() == Some("gpu_user_annotation") {
+            format!("stream {}", raw_tid)
+        } else {
+            raw_tid
+        };
+
         let event = build_event(obj, name, pid, tid.clone(), phase);
+        staging.push(StagingEvent { event, pid, tid, phase });
+    }
+
+    // Per-rank ts origin: subtract the minimum ts so the column is small.
+    let start_ts = staging.iter().map(|s| s.event.ts).min().unwrap_or(0);
+    for s in staging.iter_mut() {
+        s.event.ts -= start_ts;
+    }
+    for s in staging {
         streams
-            .entry(pid)
+            .entry(s.pid)
             .or_default()
-            .entry(tid)
+            .entry(s.tid)
             .or_default()
-            .entry(phase)
+            .entry(s.phase)
             .or_default()
-            .push(event);
+            .push(s.event);
     }
 
     let mut trace = Trace::empty();
     trace.ranks.insert(rank.clone(), streams);
+    trace.start_timestamp.insert(rank.clone(), start_ts);
     let mut rank_meta: AHashMap<String, serde_json::Value> = AHashMap::new();
     rank_meta.extend(metadata);
     trace.metadata.insert(rank, rank_meta);
     Ok(trace)
+}
+
+struct StagingEvent {
+    event: Event,
+    pid: i64,
+    tid: String,
+    phase: Phase,
 }
 
 fn build_event(
@@ -235,6 +280,139 @@ fn build_event(
         bp,
         s,
     }
+}
+
+/// `serde_json` based parser used for files that exceed `simd-json`'s 4 GiB
+/// cap.  Slower (no SIMD) but no size limit.  Mirrors the simd-json path.
+fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Trace> {
+    use serde_json::Value;
+
+    let root: Value = serde_json::from_slice(bytes)?;
+    let root_obj = root
+        .as_object()
+        .ok_or_else(|| crate::Error::InvalidTrace("expected JSON object".into()))?;
+
+    let rank = root_obj
+        .get("distributedInfo")
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get("rank"))
+        .and_then(|v| v.as_i64())
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| {
+            source_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| "0".to_string())
+        });
+
+    let trace_events = root_obj
+        .get("traceEvents")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| crate::Error::InvalidTrace("missing traceEvents array".into()))?;
+
+    let mut streams: StreamMap = IndexMap::new();
+    let mut metadata: AHashMap<String, serde_json::Value> = AHashMap::new();
+    let mut staging: Vec<StagingEvent> = Vec::with_capacity(trace_events.len());
+
+    for raw in trace_events {
+        let obj = match raw.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+
+        let ph = obj.get("ph").and_then(|v| v.as_str()).map(|s| s.as_bytes()[0]).unwrap_or(b'X');
+        let phase = Phase(ph);
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let pid: i64 = obj.get("pid").and_then(|v| v.as_i64()).unwrap_or(0);
+        let raw_tid: String = match obj.get("tid") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Number(n)) => n.to_string(),
+            _ => "0".to_string(),
+        };
+
+        if phase == Phase::METADATA {
+            let value = obj.get("args").cloned().unwrap_or(Value::Null);
+            metadata.insert(name, value);
+            continue;
+        }
+
+        let stream_in_args = obj.get("args").and_then(|args| args.as_object()).and_then(|a| {
+            a.get("stream").and_then(|v| {
+                v.as_i64()
+                    .map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(str::to_owned))
+            })
+        });
+        let cat = obj.get("cat").and_then(|v| v.as_str()).map(str::to_owned);
+
+        let tid = if let Some(stream) = stream_in_args {
+            format!("stream {}", stream)
+        } else if cat.as_deref() == Some("gpu_user_annotation") {
+            format!("stream {}", raw_tid)
+        } else {
+            raw_tid
+        };
+
+        let event = build_event_serde(obj, name, pid, tid.clone(), phase);
+        staging.push(StagingEvent { event, pid, tid, phase });
+    }
+
+    let start_ts = staging.iter().map(|s| s.event.ts).min().unwrap_or(0);
+    for s in staging.iter_mut() {
+        s.event.ts -= start_ts;
+    }
+    for s in staging {
+        streams
+            .entry(s.pid)
+            .or_default()
+            .entry(s.tid)
+            .or_default()
+            .entry(s.phase)
+            .or_default()
+            .push(s.event);
+    }
+
+    let mut trace = Trace::empty();
+    trace.ranks.insert(rank.clone(), streams);
+    trace.start_timestamp.insert(rank.clone(), start_ts);
+    let mut rank_meta: AHashMap<String, serde_json::Value> = AHashMap::new();
+    rank_meta.extend(metadata);
+    trace.metadata.insert(rank, rank_meta);
+    Ok(trace)
+}
+
+fn build_event_serde(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    name: String,
+    pid: i64,
+    tid: String,
+    phase: Phase,
+) -> Event {
+    use serde_json::Value;
+    let ts = obj.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+    let dur = obj.get("dur").and_then(|v| v.as_i64());
+    let cat = obj.get("cat").and_then(|v| v.as_str()).map(str::to_owned);
+    let id = obj.get("id").and_then(|v| v.as_i64());
+    let bp = obj.get("bp").and_then(|v| v.as_str()).map(str::to_owned);
+    let s = obj.get("s").and_then(|v| v.as_str()).map(str::to_owned);
+
+    let args = obj.get("args").and_then(|v| match v {
+        Value::Object(m) => {
+            let mut map = ahash::AHashMap::with_capacity(m.len());
+            for (k, v) in m {
+                map.insert(k.clone(), v.clone());
+            }
+            Some(map)
+        }
+        _ => None,
+    });
+
+    Event { name, ts, dur, cat, ph: phase, pid, tid, args, id, bp, s }
 }
 
 fn simd_to_serde(v: simd_json::OwnedValue) -> serde_json::Value {

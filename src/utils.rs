@@ -16,29 +16,32 @@ pub fn normalize_name(name: &str) -> String {
     DIGIT_RUN_RE.replace_all(name, "0").into_owned()
 }
 
-/// Extract every digit run from `name` as integers (used to reconstruct
-/// `name_pattern + name_nums`).
-pub fn extract_digit_runs(name: &str) -> Vec<i64> {
+/// Extract every digit run from `name` as raw lexical strings (preserving
+/// leading zeros).  Used together with `name_pattern` to losslessly
+/// reconstruct names like `0x4387e040` whose `040` digit-run would otherwise
+/// be mangled to `40` if parsed as an integer.
+pub fn extract_digit_runs(name: &str) -> Vec<String> {
     DIGIT_RUN_RE
         .find_iter(name)
-        .filter_map(|m| m.as_str().parse::<i64>().ok())
+        .map(|m| m.as_str().to_string())
         .collect()
 }
 
-/// Re-insert digit runs into a normalized pattern: replaces each `0` placeholder
-/// in `pattern` with the corresponding entry from `nums`.
-pub fn restore_digits(pattern: &str, nums: &[i64]) -> String {
+/// Re-insert digit runs into a normalized pattern: each single `'0'` placeholder
+/// in `pattern` (every digit-run was collapsed to one `'0'` by `normalize_name`)
+/// is replaced by the corresponding entry from `nums`.
+///
+/// **Important**: do **not** collapse adjacent `'0'`s in `pattern` — each one
+/// represents an independent digit-run slot.  E.g. for the input
+/// `0x4387e040` the pattern is `0x0e0` (3 separate `'0'` placeholders), and
+/// `nums = ["0", "4387", "040"]`.
+pub fn restore_digits(pattern: &str, nums: &[String]) -> String {
     let mut out = String::with_capacity(pattern.len() + nums.len() * 2);
     let mut iter = nums.iter();
-    let mut chars = pattern.chars().peekable();
-    while let Some(c) = chars.next() {
+    for c in pattern.chars() {
         if c == '0' {
-            // Consume run of zeros and replace whole run with one number.
-            while let Some('0') = chars.peek().copied() {
-                chars.next();
-            }
             if let Some(n) = iter.next() {
-                out.push_str(&n.to_string());
+                out.push_str(n);
             } else {
                 out.push('0');
             }
@@ -73,6 +76,27 @@ mod tests {
         let original = "transformer.layers.42.attention.qkv";
         let pattern = normalize_name(original);
         let nums = extract_digit_runs(original);
+        assert_eq!(restore_digits(&pattern, &nums), original);
+    }
+
+    #[test]
+    fn restore_preserves_leading_zeros() {
+        let original = "succl:broadcast Graph (0x4387e040)";
+        let pattern = normalize_name(original);
+        let nums = extract_digit_runs(original);
+        assert_eq!(restore_digits(&pattern, &nums), original);
+    }
+
+    #[test]
+    fn restore_preserves_adjacent_zero_placeholders() {
+        // The tag `0x0` becomes pattern `0x0` (the `0x` part has *one* digit
+        // run, and the trailing `0` is a *second* digit run); `restore_digits`
+        // must not collapse them into one slot.
+        let original = "ptr=0x0";
+        let pattern = normalize_name(original);
+        let nums = extract_digit_runs(original);
+        assert_eq!(pattern, "ptr=0x0");
+        assert_eq!(nums, vec!["0".to_string(), "0".to_string()]);
         assert_eq!(restore_digits(&pattern, &nums), original);
     }
 }

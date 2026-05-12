@@ -42,6 +42,16 @@ enum Cmd {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// Compress a trace, decompress it, and verify lossless round-trip.
+    Roundtrip {
+        input: PathBuf,
+        /// One of: padoc, scalatrace, tracezip, gzip_json, gzip_msgpack
+        #[arg(long, default_value = "padoc")]
+        compressor: String,
+        /// Treat `input` as a directory of per-rank JSONs.
+        #[arg(long)]
+        dir: bool,
+    },
     /// Run an analysis task on a trace.
     Analyze {
         trace: PathBuf,
@@ -99,6 +109,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Compress { input, output, zstd_level } => cmd_compress(&input, &output, zstd_level),
         Cmd::Decompress { input, output } => cmd_decompress(&input, &output),
+        Cmd::Roundtrip { input, compressor, dir } => cmd_roundtrip(&input, &compressor, dir),
         Cmd::Analyze { trace, task, in_situ } => cmd_analyze(&trace, &task, in_situ),
         Cmd::List => cmd_list(),
         Cmd::Bench { sub } => match sub {
@@ -129,6 +140,86 @@ fn cmd_decompress(input: &Path, output: &Path) -> anyhow::Result<()> {
     });
     std::fs::write(output, serde_json::to_vec_pretty(&preview)?)?;
     println!("decoded {} templates", compressed.templates.len());
+    Ok(())
+}
+
+fn cmd_roundtrip(input: &Path, compressor_name: &str, force_dir: bool) -> anyhow::Result<()> {
+    use std::time::Instant;
+
+    let is_dir = force_dir || input.is_dir();
+    let load_start = Instant::now();
+    let trace = if is_dir { Trace::from_dir(input)? } else { Trace::from_file(input)? };
+    let load_secs = load_start.elapsed().as_secs_f64();
+    let original_event_count = trace.event_count();
+
+    let raw_bytes = std::fs::metadata(input)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let registry = baselines::registry();
+    let compressor = registry
+        .iter()
+        .find(|c| c.name() == compressor_name)
+        .context("unknown compressor")?;
+
+    let compress_start = Instant::now();
+    let artifact = compressor.compress(&trace)?;
+    let compress_secs = compress_start.elapsed().as_secs_f64();
+    let compressed_bytes = artifact.bytes.len() as u64;
+
+    let decompress_start = Instant::now();
+    let recovered = compressor.decompress(&artifact.bytes)?;
+    let decompress_secs = decompress_start.elapsed().as_secs_f64();
+
+    let verify_start = Instant::now();
+    let report = padoc::verify::compare_traces(&trace, &recovered);
+    let verify_secs = verify_start.elapsed().as_secs_f64();
+
+    let ratio = if compressed_bytes > 0 {
+        raw_bytes as f64 / compressed_bytes as f64
+    } else {
+        0.0
+    };
+    let throughput_mb_s = if compress_secs > 0.0 {
+        raw_bytes as f64 / 1024.0 / 1024.0 / compress_secs
+    } else {
+        0.0
+    };
+
+    println!("input              : {}", input.display());
+    println!("compressor         : {}", compressor_name);
+    println!("input_size         : {}", humansize::format_size(raw_bytes, humansize::BINARY));
+    println!("event_count        : {}", original_event_count);
+    println!("load_secs          : {:>8.3}", load_secs);
+    println!("compress_secs      : {:>8.3}", compress_secs);
+    println!("decompress_secs    : {:>8.3}", decompress_secs);
+    println!("verify_secs        : {:>8.3}", verify_secs);
+    println!("compressed_bytes   : {}", humansize::format_size(compressed_bytes, humansize::BINARY));
+    println!("ratio              : {:>8.2}x", ratio);
+    println!("compress_throughput: {:>8.1} MB/s", throughput_mb_s);
+    println!("--- verify report ---");
+    println!("original_events    : {}", report.original_event_count);
+    println!("reconstructed      : {}", report.reconstructed_event_count);
+    println!("matching           : {}", report.matching_events);
+    println!("mismatched         : {}", report.mismatched_events);
+    println!("missing_streams    : {}", report.missing_streams.len());
+    println!("extra_streams      : {}", report.extra_streams.len());
+    if !report.stream_count_diffs.is_empty() {
+        println!("stream_count_diffs (first 10):");
+        for d in &report.stream_count_diffs {
+            println!("  - {}", d);
+        }
+    }
+    if !report.first_mismatches.is_empty() {
+        println!("first_mismatches:");
+        for m in &report.first_mismatches {
+            println!("  - {}", m);
+        }
+    }
+    println!("LOSSLESS           : {}", if report.is_ok() { "YES" } else { "NO" });
+    if !report.is_ok() {
+        anyhow::bail!("round-trip is NOT lossless");
+    }
     Ok(())
 }
 

@@ -21,7 +21,9 @@ pub fn run_compression_matrix(
     let mut out = Vec::new();
     for ds in datasets {
         let trace = if ds.is_dir { Trace::from_dir(ds.path)? } else { Trace::from_file(ds.path)? };
-        let raw_bytes = std::fs::metadata(ds.path).map(|m| m.len()).unwrap_or(0);
+        let raw_bytes = if ds.is_dir { dir_size_bytes(ds.path) } else {
+            std::fs::metadata(ds.path).map(|m| m.len()).unwrap_or(0)
+        };
         let event_count = trace.event_count();
         for c in compressors {
             let artifact = c.compress(&trace)?;
@@ -103,6 +105,22 @@ pub fn run_analysis_matrix(
         }
     }
     Ok(out)
+}
+
+/// Sum of every regular-file's byte size under `path` (non-recursive).
+/// Used to report raw_bytes for multi-rank trace directories.
+fn dir_size_bytes(path: &Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    total += meta.len();
+                }
+            }
+        }
+    }
+    total
 }
 
 impl Trace {

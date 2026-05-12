@@ -12,7 +12,8 @@ use super::config::CompressorConfig;
 use super::core::TemplateCompressor;
 use crate::event::{MergeEvent, MergeKernelEvent};
 use crate::node::{Node, SameCpuNode, TemplateId};
-use crate::slp::{compress_name_nums, compress_same_args, SlpColumn};
+use crate::event::ArgColumn;
+use crate::slp::{compress_name_nums, SlpColumn};
 
 /// Compress one sub-tree.  Public so it can be invoked iteratively from
 /// the call-tree builder.  Recursive but bounded by the original tree depth
@@ -53,14 +54,21 @@ fn group_similar(compressor: &TemplateCompressor, children: Vec<Node>) -> Vec<No
         return children;
     }
 
-    // Classify children up front: only Cpu and KernelLaunch nodes participate
-    // in grouping.  Bucket index is `template_index()`.
-    let mut buckets: AHashMap<TemplateId, Vec<usize>> = AHashMap::new();
+    // Classify children up front: `Node::Cpu` nodes are bucketed by template
+    // for `SameCpu` formation; `Node::KernelLaunch` nodes are bucketed
+    // separately so they can become a `KernelsLaunch` (Python's
+    // `KernelsLaunchNode`) which preserves the per-instance GPU pair.
+    let mut cpu_buckets: AHashMap<TemplateId, Vec<usize>> = AHashMap::new();
+    let mut kernel_buckets: AHashMap<TemplateId, Vec<usize>> = AHashMap::new();
     for (i, child) in children.iter().enumerate() {
-        if let Some(t) = child.template_index() {
-            if matches!(child, Node::Cpu(_) | Node::KernelLaunch(_)) {
-                buckets.entry(t).or_default().push(i);
+        match child {
+            Node::Cpu(c) => {
+                cpu_buckets.entry(c.template).or_default().push(i);
             }
+            Node::KernelLaunch(k) => {
+                kernel_buckets.entry(k.cpu_template).or_default().push(i);
+            }
+            _ => {}
         }
     }
 
@@ -68,10 +76,12 @@ fn group_similar(compressor: &TemplateCompressor, children: Vec<Node>) -> Vec<No
     // bucket members one by one and leave `None` placeholders.
     let mut slots: Vec<Option<Node>> = children.into_iter().map(Some).collect();
 
-    // Owner index -> merged SameCpu node.  Owner is the smallest original
+    // Owner index -> merged group node.  Owner is the smallest original
     // position so the merged group preserves the original relative ordering.
     let mut grouped_owners: AHashMap<usize, Node> = AHashMap::new();
-    for (_template, indices) in buckets.into_iter() {
+
+    // 1) Cpu groups -> SameCpu.
+    for (_template, indices) in cpu_buckets.into_iter() {
         if indices.len() < 2 {
             continue;
         }
@@ -83,6 +93,34 @@ fn group_similar(compressor: &TemplateCompressor, children: Vec<Node>) -> Vec<No
             }
         }
         grouped_owners.insert(owner_idx, build_same_cpu(group, &compressor.config));
+    }
+
+    // 2) KernelLaunch groups -> KernelsLaunch.  Stores all (cpu, gpu) pairs in
+    //    parallel arrays so the GPU events survive the merge.
+    for (_template, indices) in kernel_buckets.into_iter() {
+        if indices.len() < 2 {
+            continue;
+        }
+        let owner_idx = *indices.iter().min().unwrap();
+        let mut cpu_template = 0u32;
+        let mut cpu_instances: Vec<u32> = Vec::with_capacity(indices.len());
+        let mut gpu_templates: Vec<u32> = Vec::with_capacity(indices.len());
+        let mut gpu_instances: Vec<u32> = Vec::with_capacity(indices.len());
+        for idx in indices {
+            if let Some(Node::KernelLaunch(k)) = slots[idx].take() {
+                cpu_template = k.cpu_template;
+                cpu_instances.push(k.cpu_instance);
+                gpu_templates.push(k.gpu_template);
+                gpu_instances.push(k.gpu_instance);
+            }
+        }
+        let merged = Node::KernelsLaunch(crate::node::KernelsLaunchNode {
+            cpu_template,
+            cpu_instances,
+            gpu_templates,
+            gpu_instances,
+        });
+        grouped_owners.insert(owner_idx, merged);
     }
 
     // Reassemble: keep ungrouped nodes in place; emit merged group at the
@@ -103,7 +141,8 @@ fn build_same_cpu(group: Vec<Node>, config: &CompressorConfig) -> Node {
         return Node::Root { children: Vec::new() };
     }
 
-    // Every group member should share the same template id (we bucket by it).
+    // group_similar only feeds us pure-Cpu buckets, so every member is a
+    // `Node::Cpu`.  Anything else is a programming error.
     let template = group[0].template_index().unwrap_or(0);
     let mut instances: Vec<u32> = Vec::with_capacity(group.len());
     let mut child_lists: Vec<Vec<Node>> = Vec::with_capacity(group.len());
@@ -113,13 +152,10 @@ fn build_same_cpu(group: Vec<Node>, config: &CompressorConfig) -> Node {
                 instances.push(c.instance);
                 child_lists.push(c.children);
             }
-            Node::KernelLaunch(k) => {
-                instances.push(k.cpu_instance);
-                child_lists.push(Vec::new());
-            }
             other => {
+                debug_assert!(false, "build_same_cpu got non-Cpu member: {:?}", other);
                 instances.push(0);
-                child_lists.push(other.children().iter().map(|n| (*n).clone()).collect());
+                child_lists.push(Vec::new());
             }
         }
     }
@@ -223,6 +259,17 @@ fn anchor_match(child_lists: &[Vec<Node>]) -> (Vec<Node>, Vec<Vec<Node>>) {
 /// Convert a list of N children that all share the same template_id into a
 /// single SameCpu (recursing the anchor-matching one level deeper for their
 /// own children).  The group must be non-empty.
+///
+/// **Correctness invariant**: `instances.len()` and `child_lists.len()` must
+/// stay equal.
+///
+/// When a member is itself already a `SameCpu` (i.e. a previous recursion
+/// merged inner siblings into one node), it cannot be safely flattened into
+/// the outer SameCpu: its M sub-instances belong to a single outer slot, not
+/// to all K outer instances.  Flattening either drops events (if we
+/// under-count instances vs. slots) or duplicates them (if we over-count).
+/// The safe fallback is to keep the group's members as plain siblings under
+/// a `Root` wrapper — slightly worse compression but bit-exact decoding.
 fn merge_anchor_group(group: Vec<Node>) -> Node {
     if group.is_empty() {
         return Node::Root { children: Vec::new() };
@@ -230,6 +277,40 @@ fn merge_anchor_group(group: Vec<Node>) -> Node {
     if group.len() == 1 {
         return group.into_iter().next().unwrap();
     }
+    // Mixed-type groups can't form a single same-template aggregator without
+    // either dropping or duplicating events; keep them as siblings.
+    if group.iter().any(|n| matches!(n, Node::SameCpu(_))) {
+        return Node::Root { children: group };
+    }
+
+    // All-KernelLaunch group => KernelsLaunch (preserves per-instance GPU pair).
+    if group.iter().all(|n| matches!(n, Node::KernelLaunch(_))) {
+        let mut cpu_template = 0u32;
+        let mut cpu_instances: Vec<u32> = Vec::with_capacity(group.len());
+        let mut gpu_templates: Vec<u32> = Vec::with_capacity(group.len());
+        let mut gpu_instances: Vec<u32> = Vec::with_capacity(group.len());
+        for member in group {
+            if let Node::KernelLaunch(k) = member {
+                cpu_template = k.cpu_template;
+                cpu_instances.push(k.cpu_instance);
+                gpu_templates.push(k.gpu_template);
+                gpu_instances.push(k.gpu_instance);
+            }
+        }
+        return Node::KernelsLaunch(crate::node::KernelsLaunchNode {
+            cpu_template,
+            cpu_instances,
+            gpu_templates,
+            gpu_instances,
+        });
+    }
+
+    // Mixed Cpu + KernelLaunch group: same problem as SameCpu — fall back to
+    // siblings to keep correctness.
+    if group.iter().any(|n| matches!(n, Node::KernelLaunch(_))) {
+        return Node::Root { children: group };
+    }
+
     let template = group[0].template_index().unwrap_or(0);
     let mut instances: Vec<u32> = Vec::with_capacity(group.len());
     let mut child_lists: Vec<Vec<Node>> = Vec::with_capacity(group.len());
@@ -239,24 +320,13 @@ fn merge_anchor_group(group: Vec<Node>) -> Node {
                 instances.push(c.instance);
                 child_lists.push(c.children);
             }
-            Node::SameCpu(s) => {
-                instances.extend(s.instances);
-                let mut combined = s.children;
-                for slot_chunk in s.slots {
-                    combined.extend(slot_chunk);
-                }
-                child_lists.push(combined);
-            }
-            Node::KernelLaunch(k) => {
-                instances.push(k.cpu_instance);
-                child_lists.push(Vec::new());
-            }
             other => {
                 instances.push(0);
                 child_lists.push(other.children().iter().map(|n| (*n).clone()).collect());
             }
         }
     }
+    debug_assert_eq!(instances.len(), child_lists.len(), "SameCpu invariant broken");
     let (children, slots) = anchor_match(&child_lists);
     Node::SameCpu(SameCpuNode {
         template,
@@ -275,23 +345,8 @@ pub(crate) fn finalize_cpu_template(tmpl: &mut MergeEvent, config: &CompressorCo
         tmpl.name_nums = compress_name_nums(&tmpl.name_nums);
     }
     if config.enable_args_dedup {
-        for col in 0..tmpl.arg_keys.len() {
-            let mut column: Vec<crate::event::ArgValue> = tmpl
-                .args_values
-                .iter()
-                .map(|row| row.get(col).cloned().unwrap_or(serde_json::Value::Null))
-                .collect();
-            compress_same_args(&mut column);
-            if column.len() == 1 {
-                // Dedup column: write back a single sentinel row tagging the
-                // shared value via a sidecar.  We keep `args_values` columnar
-                // here to avoid expanding the Vec unnecessarily.
-                for row in tmpl.args_values.iter_mut() {
-                    if col < row.len() {
-                        row[col] = column[0].clone();
-                    }
-                }
-            }
+        for col in tmpl.args_columns.iter_mut() {
+            dedup_arg_column(col);
         }
     }
     if config.enable_slp {
@@ -312,21 +367,26 @@ pub(crate) fn finalize_gpu_template(tmpl: &mut MergeKernelEvent, config: &Compre
         tmpl.name_nums = compress_name_nums(&tmpl.name_nums);
     }
     if config.enable_args_dedup {
-        for col in 0..tmpl.arg_keys.len() {
-            let mut column: Vec<crate::event::ArgValue> = tmpl
-                .args_values
-                .iter()
-                .map(|row| row.get(col).cloned().unwrap_or(serde_json::Value::Null))
-                .collect();
-            compress_same_args(&mut column);
-            if column.len() == 1 {
-                for row in tmpl.args_values.iter_mut() {
-                    if col < row.len() {
-                        row[col] = column[0].clone();
-                    }
-                }
-            }
+        for col in tmpl.args_columns.iter_mut() {
+            dedup_arg_column(col);
         }
     }
     let _ = config; // SLP wiring identical to the CPU path above; deferred.
+}
+
+/// In-place dedup: if every value in a `PerInstance` column is identical,
+/// collapse to `Constant(value)` — this is the cheap analog of Python's
+/// `compress_same_args` for the all-same case.  Skips columns that are
+/// already constant.  Cost: one linear scan over the column with `==`
+/// against the first element; no clone unless dedup actually triggers.
+fn dedup_arg_column(col: &mut ArgColumn) {
+    if let ArgColumn::PerInstance(values) = col {
+        if values.len() <= 1 {
+            return;
+        }
+        let (first, rest) = values.split_first().unwrap();
+        if rest.iter().all(|v| v == first) {
+            *col = ArgColumn::Constant(values.swap_remove(0));
+        }
+    }
 }

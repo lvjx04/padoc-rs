@@ -34,9 +34,7 @@ impl BaselineCompressor for PadocCompressor {
     }
 
     fn decompress(&self, bytes: &[u8]) -> Result<Trace> {
-        let _compressed = CompressedTrace::from_bytes(bytes)?;
-        // Full decompression is exposed via padoc::decompress in a follow-up
-        // step; for now the bench harness only needs to decode the wrapper.
-        Ok(Trace::empty())
+        let compressed = CompressedTrace::from_bytes(bytes)?;
+        Ok(crate::compressor::decompress(&compressed))
     }
 }

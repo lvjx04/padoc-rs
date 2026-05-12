@@ -6,7 +6,7 @@
 use ahash::AHashMap;
 
 use super::config::CompressorConfig;
-use crate::event::{Event, EventSignature, MergeEvent, MergeKernelEvent, NameNums, Template};
+use crate::event::{ArgColumn, Event, EventSignature, MergeEvent, MergeKernelEvent, NameNums, Template};
 use crate::node::TemplateId;
 use crate::trace::{CompressedTrace, Trace};
 use crate::{Error, Result};
@@ -60,12 +60,18 @@ impl TemplateCompressor {
             return (tid, inst);
         }
         let tid = self.templates.len() as TemplateId;
+        let arg_keys: Vec<String> = signature.arg_keys.iter().cloned().collect();
+        let args_columns: Vec<ArgColumn> = arg_keys
+            .iter()
+            .map(|_| ArgColumn::PerInstance(Vec::new()))
+            .collect();
         let mut tmpl = MergeEvent {
             name_pattern: signature.normalized_name.clone(),
             cat: event.cat.clone(),
             bp: event.bp.clone(),
             s: event.s.clone(),
-            arg_keys: signature.arg_keys.iter().cloned().collect(),
+            arg_keys,
+            args_columns,
             ..Default::default()
         };
         let inst = append_to_merge(&mut tmpl, event);
@@ -87,10 +93,16 @@ impl TemplateCompressor {
             return (tid, inst);
         }
         let tid = self.templates.len() as TemplateId;
+        let arg_keys: Vec<String> = signature.arg_keys.iter().cloned().collect();
+        let args_columns: Vec<ArgColumn> = arg_keys
+            .iter()
+            .map(|_| ArgColumn::PerInstance(Vec::new()))
+            .collect();
         let mut tmpl = MergeKernelEvent {
             name_pattern: signature.normalized_name.clone(),
             cat: event.cat.clone(),
-            arg_keys: signature.arg_keys.iter().cloned().collect(),
+            arg_keys,
+            args_columns,
             ..Default::default()
         };
         let inst = append_to_kernel(&mut tmpl, event, gpu_stream_tid);
@@ -145,19 +157,7 @@ pub(crate) fn append_to_merge(tmpl: &mut MergeEvent, event: &Event) -> u32 {
     if let Some(i) = event.id {
         tmpl.id.push(i);
     }
-    let row: Vec<crate::event::ArgValue> = tmpl
-        .arg_keys
-        .iter()
-        .map(|k| {
-            event
-                .args
-                .as_ref()
-                .and_then(|a| a.get(k.as_str()))
-                .cloned()
-                .unwrap_or(serde_json::Value::Null)
-        })
-        .collect();
-    tmpl.args_values.push(row);
+    append_args_columns(&mut tmpl.args_columns, &tmpl.arg_keys, event);
     push_name_nums(&mut tmpl.name_nums, nums);
     inst
 }
@@ -172,24 +172,24 @@ pub(crate) fn append_to_kernel(tmpl: &mut MergeKernelEvent, event: &Event, gpu_s
     tmpl.pid.push(event.pid);
     tmpl.stream_tid.push(gpu_stream_tid.to_string());
     tmpl.ph.push(event.ph);
-    let row: Vec<crate::event::ArgValue> = tmpl
-        .arg_keys
-        .iter()
-        .map(|k| {
-            event
-                .args
-                .as_ref()
-                .and_then(|a| a.get(k.as_str()))
-                .cloned()
-                .unwrap_or(serde_json::Value::Null)
-        })
-        .collect();
-    tmpl.args_values.push(row);
+    append_args_columns(&mut tmpl.args_columns, &tmpl.arg_keys, event);
     push_name_nums(&mut tmpl.name_nums, nums);
     inst
 }
 
-fn push_name_nums(slot: &mut NameNums, nums: Vec<i64>) {
+fn append_args_columns(args_columns: &mut [ArgColumn], arg_keys: &[String], event: &Event) {
+    for (col, key) in args_columns.iter_mut().zip(arg_keys.iter()) {
+        let v = event
+            .args
+            .as_ref()
+            .and_then(|a| a.get(key.as_str()))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        col.push(v);
+    }
+}
+
+fn push_name_nums(slot: &mut NameNums, nums: Vec<String>) {
     match slot {
         NameNums::Empty => {
             if !nums.is_empty() {

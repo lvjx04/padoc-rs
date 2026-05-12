@@ -101,7 +101,7 @@ impl SlpColumn {
     }
 }
 
-/// Transpose a row-major `Vec<Vec<i64>>` into columnar form, collapsing
+/// Transpose a row-major `Vec<Vec<String>>` into columnar form, collapsing
 /// every column whose values are all equal into a 1-element column.
 pub fn compress_name_nums(rows: &NameNums) -> NameNums {
     let rows = match rows {
@@ -116,14 +116,14 @@ pub fn compress_name_nums(rows: &NameNums) -> NameNums {
     if width == 0 {
         return NameNums::Empty;
     }
-    let mut columns: Vec<Vec<i64>> = (0..width).map(|_| Vec::with_capacity(rows.len())).collect();
+    let mut columns: Vec<Vec<String>> = (0..width).map(|_| Vec::with_capacity(rows.len())).collect();
     for row in rows {
         for (i, v) in row.iter().enumerate().take(width) {
-            columns[i].push(*v);
+            columns[i].push(v.clone());
         }
     }
     for col in columns.iter_mut() {
-        if let Some(first) = col.first().copied() {
+        if let Some(first) = col.first().cloned() {
             if col.iter().all(|v| *v == first) {
                 col.truncate(1);
             }
@@ -133,7 +133,7 @@ pub fn compress_name_nums(rows: &NameNums) -> NameNums {
 }
 
 /// Decode the `i`-th instance's digit fillers from `Columnar` form.
-pub fn decode_name_nums(nums: &NameNums, instance: usize) -> Vec<i64> {
+pub fn decode_name_nums(nums: &NameNums, instance: usize) -> Vec<String> {
     match nums {
         NameNums::Empty => Vec::new(),
         NameNums::Rows(rows) => rows.get(instance).cloned().unwrap_or_default(),
@@ -141,9 +141,9 @@ pub fn decode_name_nums(nums: &NameNums, instance: usize) -> Vec<i64> {
             .iter()
             .map(|col| {
                 if col.len() == 1 {
-                    col[0]
+                    col[0].clone()
                 } else {
-                    *col.get(instance).unwrap_or(&0)
+                    col.get(instance).cloned().unwrap_or_default()
                 }
             })
             .collect(),
@@ -206,14 +206,32 @@ mod tests {
 
     #[test]
     fn name_nums_columnar_collapses_constants() {
-        let rows = NameNums::Rows(vec![vec![1, 99], vec![2, 99], vec![3, 99]]);
+        let rows = NameNums::Rows(vec![
+            vec!["1".to_string(), "99".to_string()],
+            vec!["2".to_string(), "99".to_string()],
+            vec!["3".to_string(), "99".to_string()],
+        ]);
         let columnar = compress_name_nums(&rows);
         match columnar {
             NameNums::Columnar(cols) => {
-                assert_eq!(cols[0], vec![1, 2, 3]);
-                assert_eq!(cols[1], vec![99]); // collapsed
+                assert_eq!(cols[0], vec!["1".to_string(), "2".to_string(), "3".to_string()]);
+                assert_eq!(cols[1], vec!["99".to_string()]); // collapsed
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn name_nums_round_trip_preserves_leading_zeros() {
+        let rows = NameNums::Rows(vec![
+            vec!["0x".to_string(), "040".to_string()],
+            vec!["0x".to_string(), "07".to_string()],
+        ]);
+        let columnar = compress_name_nums(&rows);
+        // First column collapses (constant); second stays per-instance.
+        let inst0 = decode_name_nums(&columnar, 0);
+        let inst1 = decode_name_nums(&columnar, 1);
+        assert_eq!(inst0, vec!["0x".to_string(), "040".to_string()]);
+        assert_eq!(inst1, vec!["0x".to_string(), "07".to_string()]);
     }
 }

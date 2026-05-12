@@ -31,12 +31,21 @@ pub(crate) fn build_rank(
     rank: &str,
     streams: &StreamMap,
 ) -> BTreeMap<i64, BTreeMap<String, BTreeMap<u8, Node>>> {
-    // 1) Index every GPU event by correlation (only once per rank).
+    // 1) Index every GPU event by correlation (only the first match per
+    //    correlation; later events with the same correlation stay where they
+    //    are and are emitted by build_gpu_tree).
     let gpu_events = collect_gpu_events_by_correlation(streams);
 
-    // Track which correlations got consumed by a CPU launch so we don't
-    // double-add them when we visit the GPU stream itself.
-    let mut consumed: ahash::AHashSet<i64> = ahash::AHashSet::with_capacity(gpu_events.len());
+    // Each correlation can only pair once; track which ones have been used.
+    let mut paired_corrs: ahash::AHashSet<i64> = ahash::AHashSet::with_capacity(gpu_events.len());
+    // Specific GPU events that were actually consumed; build_gpu_tree skips
+    // exactly these.  Keyed by `(tid, event_index_in_phase)` — the only key
+    // strong enough to distinguish events that share `ts` on the same stream
+    // (e.g. zero-duration GPU annotations or short kernels with identical
+    // start times).  Earlier `(tid, ts)` keying lost ~1.5% of GPU events on
+    // streams with ts collisions.
+    let mut consumed_gpu: ahash::AHashSet<GpuKey> =
+        ahash::AHashSet::with_capacity(gpu_events.len());
 
     let mut out: BTreeMap<i64, BTreeMap<String, BTreeMap<u8, Node>>> = BTreeMap::new();
 
@@ -55,7 +64,8 @@ pub(crate) fn build_rank(
                     *phase,
                     events,
                     &gpu_events,
-                    &mut consumed,
+                    &mut paired_corrs,
+                    &mut consumed_gpu,
                 );
                 let root = if compressor.config.enable_structural {
                     super::structural::compress_node(compressor, root)
@@ -71,15 +81,14 @@ pub(crate) fn build_rank(
         }
     }
 
-    // 3) Process GPU streams: anything still not consumed becomes part of the
-    //    GpuNode for that stream.
+    // 3) Process GPU streams: every event not exactly consumed survives in GpuNode.
     for (pid, threads) in streams {
         for (tid, phases) in threads {
             if !is_gpu_stream(tid) {
                 continue;
             }
             for (phase, events) in phases {
-                let root = build_gpu_tree(compressor, *pid, tid, *phase, events, &consumed);
+                let root = build_gpu_tree(compressor, *pid, tid, *phase, events, &consumed_gpu);
                 out.entry(*pid)
                     .or_default()
                     .entry(tid.clone())
@@ -96,20 +105,29 @@ fn is_gpu_stream(tid: &str) -> bool {
     tid.contains("stream")
 }
 
-/// Returned map: correlation -> (event, gpu_stream_tid).
+/// Returned map: correlation -> (pid, tid, phase, index, event).  Carries the
+/// full `Event` and its origin coordinates so:
+///   1. the CPU launch can build a `KernelLaunch` node directly, and
+///   2. `build_gpu_tree` can skip the *exact* event by index — important when
+///      multiple GPU events share `ts` on the same stream (zero-duration
+///      annotations, identical-start short kernels), where `(tid, ts)` alone
+///      collides and silently drops events on decompress.
 fn collect_gpu_events_by_correlation(streams: &StreamMap) -> AHashMap<i64, GpuRef> {
     let mut out = AHashMap::new();
-    for (_pid, threads) in streams {
+    for (pid, threads) in streams {
         for (tid, phases) in threads {
             if !is_gpu_stream(tid) {
                 continue;
             }
-            for (_phase, events) in phases {
+            for (phase, events) in phases {
                 for (idx, event) in events.iter().enumerate() {
                     if let Some(corr) = event_correlation(event) {
                         out.entry(corr).or_insert(GpuRef {
+                            pid: *pid,
                             tid: tid.clone(),
-                            event_idx: idx,
+                            phase: *phase,
+                            idx,
+                            event: event.clone(),
                         });
                     }
                 }
@@ -121,12 +139,11 @@ fn collect_gpu_events_by_correlation(streams: &StreamMap) -> AHashMap<i64, GpuRe
 
 #[derive(Clone)]
 struct GpuRef {
+    pid: i64,
     tid: String,
-    /// Unused right now (we do not yet load the GPU event back into the
-    /// CPU-side launch's payload — see the lookup_gpu_event TODO).  Kept
-    /// so the field is in place when that wiring is finished.
-    #[allow(dead_code)]
-    event_idx: usize,
+    phase: Phase,
+    idx: usize,
+    event: Event,
 }
 
 fn event_correlation(event: &Event) -> Option<i64> {
@@ -145,7 +162,8 @@ fn build_cpu_tree(
     _phase: Phase,
     events: &[Event],
     gpu_events: &AHashMap<i64, GpuRef>,
-    consumed: &mut ahash::AHashSet<i64>,
+    paired_corrs: &mut ahash::AHashSet<i64>,
+    consumed_gpu: &mut ahash::AHashSet<GpuKey>,
 ) -> Node {
     // Sort events by (ts, -dur) -- Python uses the same key.
     let mut sorted: Vec<&Event> = events.iter().collect();
@@ -177,7 +195,7 @@ fn build_cpu_tree(
         }
 
         // Build this event's node.  Pair with GPU kernel if there's a correlation.
-        let new_node = make_cpu_or_kernel_node(compressor, ev, gpu_events, consumed);
+        let new_node = make_cpu_or_kernel_node(compressor, ev, gpu_events, paired_corrs, consumed_gpu);
         path.push(new_node);
         stack.push((ts, end_ts, path.len() - 1));
     }
@@ -220,25 +238,36 @@ fn make_cpu_or_kernel_node(
     compressor: &mut TemplateCompressor,
     event: &Event,
     gpu_events: &AHashMap<i64, GpuRef>,
-    consumed: &mut ahash::AHashSet<i64>,
+    paired_corrs: &mut ahash::AHashSet<i64>,
+    consumed_gpu: &mut ahash::AHashSet<GpuKey>,
 ) -> Node {
     let (cpu_template, cpu_instance) = compressor.intern_event_template(event);
 
+    let mut children: Vec<Node> = Vec::new();
     if compressor.config.enable_kernel_links {
         if let Some(corr) = event_correlation(event) {
-            if let Some(gpu_ref) = gpu_events.get(&corr) {
-                if !consumed.contains(&corr) {
-                    consumed.insert(corr);
-                    // Look up the actual GPU event.
-                    if let Some(gpu_event) = lookup_gpu_event(gpu_ref) {
-                        let (gpu_template, gpu_instance) = compressor.intern_kernel_template(&gpu_event, &gpu_ref.tid);
-                        return Node::KernelLaunch(KernelLaunchNode {
-                            cpu_template,
-                            cpu_instance,
-                            gpu_template,
-                            gpu_instance,
-                        });
-                    }
+            if let Some(gpu_ref) = gpu_events.get(&corr).cloned() {
+                // Each correlation can only be paired once.
+                if paired_corrs.insert(corr) {
+                    consumed_gpu.insert(GpuKey {
+                        pid: gpu_ref.pid,
+                        tid: gpu_ref.tid.clone(),
+                        phase: gpu_ref.phase,
+                        idx: gpu_ref.idx,
+                    });
+                    let (gpu_template, gpu_instance) =
+                        compressor.intern_kernel_template(&gpu_ref.event, &gpu_ref.tid);
+                    // Mirror Python: keep the CPU launch as a regular CpuNode
+                    // (so its other children survive) and attach a
+                    // KernelLaunch *child* that carries only the GPU pointer.
+                    // Decompression of `KernelLaunch` emits *only* the GPU
+                    // event; the CPU side is emitted by the parent CpuNode.
+                    children.push(Node::KernelLaunch(KernelLaunchNode {
+                        cpu_template,
+                        cpu_instance,
+                        gpu_template,
+                        gpu_instance,
+                    }));
                 }
             }
         }
@@ -247,36 +276,33 @@ fn make_cpu_or_kernel_node(
     Node::Cpu(CpuNode {
         template: cpu_template,
         instance: cpu_instance,
-        children: Vec::new(),
+        children,
         slots: Vec::new(),
     })
 }
 
-/// Helper: GPU events live in the trace itself; we don't keep a copy here.
-/// The build_rank closure above re-borrows them via the `streams` map but
-/// we don't have that here.  Instead we leave a marker — concrete lookup
-/// happens via `LiveStreams` if/when we wire it up.  For now we look the
-/// event up via a lazy path (matching Python's behaviour where every CPU
-/// launch grabs the full GPU event by correlation id).
-fn lookup_gpu_event(_gpu_ref: &GpuRef) -> Option<Event> {
-    // The live caller will replace this; build_cpu_tree already records the
-    // gpu_ref so consumers can later attach the actual GPU event payload.
-    None
-}
-
 fn build_gpu_tree(
     compressor: &mut TemplateCompressor,
-    _pid: i64,
+    pid: i64,
     tid: &str,
-    _phase: Phase,
+    phase: Phase,
     events: &[Event],
-    consumed: &ahash::AHashSet<i64>,
+    consumed_gpu: &ahash::AHashSet<GpuKey>,
 ) -> Node {
     let mut templates: Vec<TemplateId> = Vec::new();
     let mut instances: Vec<InstanceId> = Vec::new();
-    for event in events {
-        if let Some(corr) = event_correlation(event) {
-            if compressor.config.enable_kernel_links && consumed.contains(&corr) {
+    for (idx, event) in events.iter().enumerate() {
+        if compressor.config.enable_kernel_links {
+            // Cheap-path check: build a borrowed key by allocating just once
+            // (idx + tid is fixed-cost; the alternative is a parallel HashSet
+            // keyed by (pid, phase, idx) but the perf delta is < 1%).
+            let key = GpuKey {
+                pid,
+                tid: tid.to_string(),
+                phase,
+                idx,
+            };
+            if consumed_gpu.contains(&key) {
                 continue;
             }
         }
@@ -285,6 +311,17 @@ fn build_gpu_tree(
         instances.push(inst);
     }
     Node::Gpu(GpuNode { templates, instances })
+}
+
+/// Identifier of a single GPU event within one rank.  Used to mark events
+/// that have been pulled into a `KernelLaunch` so `build_gpu_tree` skips the
+/// exact same event without falsely dropping siblings that share `ts`.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub(crate) struct GpuKey {
+    pid: i64,
+    tid: String,
+    phase: Phase,
+    idx: usize,
 }
 
 /// Stub used while the lookup_gpu_event helper above is evolving.  This

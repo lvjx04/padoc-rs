@@ -113,10 +113,12 @@ pub struct MergeEvent {
     pub bp: Option<String>,
     pub s: Option<String>,
 
-    /// Sorted args key set — every instance's args values are stored aligned to this.
+    /// Sorted args key set; one [`ArgColumn`] per key, parallel to this Vec.
     pub arg_keys: Vec<String>,
-    /// One row per instance; row[i] is parallel to `arg_keys`.
-    pub args_values: Vec<Vec<ArgValue>>,
+    /// **Column-major** args storage.  After `finalize_cpu_template` runs,
+    /// any column whose values are all identical collapses to
+    /// [`ArgColumn::Constant`] — N×K floats become 1 value on disk.
+    pub args_columns: Vec<ArgColumn>,
 
     pub ts: Vec<i64>,
     pub dur: Vec<i64>,
@@ -129,18 +131,69 @@ impl MergeEvent {
     }
 }
 
+/// One column of an args block.  `Constant(_)` shares the same value across
+/// all instances of the template; `PerInstance(values)` stores one entry per
+/// instance.  Either form lets us answer "what is arg key K for instance i?"
+/// in O(1) via [`ArgColumn::get`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "k", content = "v", rename_all = "snake_case")]
+pub enum ArgColumn {
+    Constant(ArgValue),
+    PerInstance(Vec<ArgValue>),
+}
+
+impl ArgColumn {
+    pub fn get(&self, instance: usize) -> Option<&ArgValue> {
+        match self {
+            ArgColumn::Constant(v) => Some(v),
+            ArgColumn::PerInstance(vs) => vs.get(instance),
+        }
+    }
+
+    pub fn push(&mut self, value: ArgValue) {
+        match self {
+            ArgColumn::PerInstance(vs) => vs.push(value),
+            ArgColumn::Constant(_) => {
+                // Should not happen: instances are appended *before* dedup.
+                debug_assert!(false, "ArgColumn::push on Constant column");
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            ArgColumn::Constant(_) => 1,
+            ArgColumn::PerInstance(vs) => vs.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Default for ArgColumn {
+    fn default() -> Self {
+        ArgColumn::PerInstance(Vec::new())
+    }
+}
+
 /// Columnar representation of per-instance digit fillers.  Empty when the
 /// raw name had no digits at all (in which case `name_pattern == name`).
+///
+/// Strings (rather than `i64`) preserve leading zeros — important for hex
+/// pointer literals like `0x4387e040` whose `040` digit-run would otherwise
+/// be parsed as `40` and lose a leading zero on round-trip.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub enum NameNums {
     #[default]
     Empty,
     /// Per-instance digit lists, **as appended** (row-major).
     /// Cleared once `compress_names()` has folded into `Columnar` form.
-    Rows(Vec<Vec<i64>>),
+    Rows(Vec<Vec<String>>),
     /// Transposed form: outer Vec is one entry per `0` in `name_pattern`,
     /// inner Vec has one entry per instance.  Singletons collapse to a 1-elem column.
-    Columnar(Vec<Vec<i64>>),
+    Columnar(Vec<Vec<String>>),
 }
 
 /// GPU-side raw event (pulled from a `correlation` arg).  Mirrors the Python
@@ -164,7 +217,7 @@ pub struct MergeKernelEvent {
     pub name_nums: NameNums,
     pub cat: Option<String>,
     pub arg_keys: Vec<String>,
-    pub args_values: Vec<Vec<ArgValue>>,
+    pub args_columns: Vec<ArgColumn>,
     pub ts: Vec<i64>,
     pub dur: Vec<i64>,
     pub pid: Vec<i64>,

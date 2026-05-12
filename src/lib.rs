@@ -35,6 +35,7 @@ pub mod synthetic;
 pub mod trace;
 pub mod tree_stats;
 pub mod utils;
+pub mod verify;
 
 pub use baselines::{BaselineCompressor, CompressArtifact};
 pub use compressor::{CompressorConfig, TemplateCompressor};

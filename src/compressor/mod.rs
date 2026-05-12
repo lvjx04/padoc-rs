@@ -15,10 +15,12 @@
 //! 5. **Pair CPU launches with GPU kernels** through `correlation` ids, producing
 //!    `Node::KernelLaunch` / `Node::KernelsLaunch` (the "soft-link edges").
 
+mod call_tree;
 mod config;
 mod core;
-mod call_tree;
+mod decompress;
 mod structural;
 
 pub use config::{all_ablation_presets, CompressorConfig};
 pub use core::TemplateCompressor;
+pub use decompress::decompress;

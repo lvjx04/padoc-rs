@@ -19,7 +19,7 @@ pub use metrics::{AnalysisRecord, CompressionRecord};
 pub use parallel::{run_parallel_compression, ParallelRecord};
 pub use report::{render_compression_table, render_scalability_table};
 pub use runner::{
-    run_analysis_matrix, run_compression_matrix, run_compression_streaming, DatasetRef,
-    StreamingDataset,
+    run_analysis_matrix, run_compression_matrix, run_compression_streaming, run_padoc_parallel,
+    DatasetRef, StreamingDataset,
 };
 pub use scalability::{run_scalability, ScalabilityPoint};

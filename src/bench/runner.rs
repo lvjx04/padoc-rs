@@ -3,9 +3,11 @@
 use crate::analysis::AnalysisTask;
 use crate::baselines::BaselineCompressor;
 use crate::bench::metrics::{AnalysisRecord, CompressionRecord};
+use crate::compressor::{merge_shards, CompressorConfig, RankShard, TemplateCompressor};
 use crate::trace::{list_trace_files, Trace};
 use crate::Result;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Instant;
 
 pub struct DatasetRef<'a> {
@@ -207,6 +209,142 @@ pub struct StreamingDataset {
     pub name: String,
     pub path: PathBuf,
     pub is_dir: bool,
+}
+
+/// Padoc-specific cross-rank parallel compression.
+///
+/// Spawns `workers` rayon threads, each loading one rank file at a time
+/// and producing a [`RankShard`] (private template table + call tree).
+/// Once every shard is built, [`merge_shards`] folds them into a single
+/// global template table — equivalent in size to running padoc on the
+/// merged in-memory `Trace` but with bounded RAM and parallel
+/// throughput.
+///
+/// `decompress_secs` is left unset because we don't perform a round-trip
+/// here; use `padoc roundtrip` for losslessness checks.
+pub fn run_padoc_parallel(
+    config: &CompressorConfig,
+    datasets: &[StreamingDataset],
+    workers: usize,
+    zstd_level: i32,
+) -> Result<Vec<CompressionRecord>> {
+    use rayon::prelude::*;
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers.max(1))
+        .build()
+        .map_err(|e| crate::Error::Other(format!("rayon pool: {e}")))?;
+
+    let mut out = Vec::new();
+    for ds in datasets {
+        let files: Vec<PathBuf> = if ds.is_dir {
+            list_trace_files(&ds.path)
+        } else {
+            vec![ds.path.clone()]
+        };
+        if files.is_empty() {
+            tracing::warn!("dataset {} has no rank files at {}", ds.name, ds.path.display());
+            continue;
+        }
+        let total_raw_bytes: u64 = files
+            .iter()
+            .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+            .sum();
+        let total_ranks = files.len();
+        tracing::info!(
+            "[{}] padoc-parallel: {} ranks, {} workers",
+            ds.name,
+            total_ranks,
+            workers
+        );
+
+        let progress = Mutex::new(0usize);
+        let label = ds.name.clone();
+
+        let start = Instant::now();
+        let shards: Vec<RankShard> = pool.install(|| -> Result<Vec<RankShard>> {
+            files
+                .par_iter()
+                .map(|file| -> Result<RankShard> {
+                    let trace = Trace::from_file(file)?;
+                    let rank_id = trace
+                        .rank_ids()
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| {
+                            file.file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown")
+                                .to_string()
+                        });
+                    let shard = TemplateCompressor::compress_rank(config, &rank_id, &trace);
+                    let mut p = progress.lock().unwrap();
+                    *p += 1;
+                    if *p == 1 || *p % 8 == 0 || *p == total_ranks {
+                        tracing::info!("[{}] {}/{} ranks compressed", label, *p, total_ranks);
+                    }
+                    Ok(shard)
+                })
+                .collect()
+        })?;
+        let parallel_secs = start.elapsed().as_secs_f64();
+
+        let merge_start = Instant::now();
+        let event_count: usize = shards
+            .iter()
+            .map(|s| count_events_in_shard(s))
+            .sum();
+        let compressed = merge_shards(config, shards)?;
+        let merge_secs = merge_start.elapsed().as_secs_f64();
+
+        let serialize_start = Instant::now();
+        let bytes = compressed.to_bytes(zstd_level)?;
+        let serialize_secs = serialize_start.elapsed().as_secs_f64();
+        let compressed_bytes = bytes.len() as u64;
+
+        let total_secs = parallel_secs + merge_secs + serialize_secs;
+        let ratio = if compressed_bytes == 0 {
+            0.0
+        } else {
+            total_raw_bytes as f64 / compressed_bytes as f64
+        };
+        let throughput = if total_secs > 0.0 {
+            total_raw_bytes as f64 / 1024.0 / 1024.0 / total_secs
+        } else {
+            0.0
+        };
+        tracing::info!(
+            "[{}] padoc-parallel done: parallel={:.2}s merge={:.2}s serialize={:.2}s total={:.2}s ratio={:.2}x",
+            ds.name,
+            parallel_secs,
+            merge_secs,
+            serialize_secs,
+            total_secs,
+            ratio
+        );
+
+        out.push(CompressionRecord {
+            compressor: "padoc".to_string(),
+            dataset: ds.name.clone(),
+            event_count,
+            raw_bytes: total_raw_bytes,
+            compressed_bytes,
+            compress_secs: total_secs,
+            decompress_secs: None,
+            ratio,
+            throughput_mb_per_sec: throughput,
+        });
+    }
+
+    Ok(out)
+}
+
+fn count_events_in_shard(shard: &RankShard) -> usize {
+    shard
+        .templates
+        .iter()
+        .map(|t| t.instance_count())
+        .sum()
 }
 
 /// Sum of every regular-file's byte size under `path` (non-recursive).

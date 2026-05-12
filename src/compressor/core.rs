@@ -52,6 +52,54 @@ impl TemplateCompressor {
         Ok(compressed)
     }
 
+    /// Build the call tree for one rank with private template state.  Used
+    /// by parallel compression: every worker calls this, the resulting
+    /// shards are then folded into a single global template table by
+    /// [`super::merge::merge_shards`].
+    ///
+    /// The returned shard's templates are **un-finalised** — SLP / name
+    /// transpose / args dedup have to run after the merge so they see the
+    /// full set of cross-rank instances.
+    pub fn compress_rank(
+        config: &CompressorConfig,
+        rank: &str,
+        trace: &Trace,
+    ) -> super::merge::RankShard {
+        let mut compressor = TemplateCompressor::with_config(config.clone());
+        let root = if let Some(streams) = trace.ranks.get(rank) {
+            super::call_tree::build_rank(&mut compressor, rank, streams)
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        super::merge::RankShard {
+            rank: rank.to_string(),
+            templates: std::mem::take(&mut compressor.templates),
+            root,
+            metadata: trace.metadata.get(rank).cloned(),
+            start_timestamp: trace.start_timestamp.get(rank).copied(),
+        }
+    }
+
+    /// Finalise the in-memory template table.  Public so `merge_shards` can
+    /// reuse the same logic on the deduplicated global table.
+    pub fn finalize_in_place(&mut self) {
+        self.finalize_templates();
+    }
+
+    /// Replace the internal templates Vec with `templates`.  Used by
+    /// `merge_shards` to feed the merged global table through the existing
+    /// finalisation pipeline.
+    pub fn set_templates_for_finalize(&mut self, templates: Vec<Template>) {
+        self.templates = templates;
+        self.signature_index.clear();
+    }
+
+    /// Move-out the internal templates Vec.  Pairs with
+    /// `set_templates_for_finalize` after `finalize_in_place`.
+    pub fn take_templates(&mut self) -> Vec<Template> {
+        std::mem::take(&mut self.templates)
+    }
+
     /// Look up an existing template id by signature, or create a fresh one.
     pub(crate) fn intern_event_template(&mut self, event: &Event) -> (TemplateId, u32) {
         let signature = event.template_signature();

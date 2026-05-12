@@ -51,6 +51,11 @@ enum Cmd {
         /// Treat `input` as a directory of per-rank JSONs.
         #[arg(long)]
         dir: bool,
+        /// Use the parallel padoc path (`compress_rank` + `merge_shards`) with
+        /// `N` rayon workers.  `1` keeps the existing single-threaded path.
+        /// Only valid for `--compressor padoc` and a directory input.
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
     },
     /// Run an analysis task on a trace.
     Analyze {
@@ -92,6 +97,15 @@ enum BenchCmd {
         /// template sharing).
         #[arg(long, default_value_t = false)]
         per_rank: bool,
+        /// Worker thread count for cross-rank parallel padoc compression.
+        /// `1` keeps the existing single-threaded path; `>1` engages
+        /// `run_padoc_parallel` (rayon, per-rank streaming, global merge).
+        /// Only honoured when the compressor set is exactly `padoc`.
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
+        /// zstd level used when serialising the merged compressed trace.
+        #[arg(long, default_value_t = 3)]
+        zstd_level: i32,
     },
     /// Analysis matrix.
     Analyze {
@@ -123,12 +137,19 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Compress { input, output, zstd_level } => cmd_compress(&input, &output, zstd_level),
         Cmd::Decompress { input, output } => cmd_decompress(&input, &output),
-        Cmd::Roundtrip { input, compressor, dir } => cmd_roundtrip(&input, &compressor, dir),
+        Cmd::Roundtrip { input, compressor, dir, workers } => cmd_roundtrip(&input, &compressor, dir, workers),
         Cmd::Analyze { trace, task, in_situ } => cmd_analyze(&trace, &task, in_situ),
         Cmd::List => cmd_list(),
         Cmd::Bench { sub } => match sub {
-            BenchCmd::Compress { datasets, manifest, compressors, per_rank } => {
-                cmd_bench_compress(&datasets, manifest.as_deref(), compressors.as_deref(), per_rank)
+            BenchCmd::Compress { datasets, manifest, compressors, per_rank, workers, zstd_level } => {
+                cmd_bench_compress(
+                    &datasets,
+                    manifest.as_deref(),
+                    compressors.as_deref(),
+                    per_rank,
+                    workers,
+                    zstd_level,
+                )
             }
             BenchCmd::Analyze { datasets } => cmd_bench_analyze(&datasets),
             BenchCmd::Scalability { dimension, values, compressor } => cmd_bench_scalability(&dimension, &values, &compressor),
@@ -159,7 +180,7 @@ fn cmd_decompress(input: &Path, output: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_roundtrip(input: &Path, compressor_name: &str, force_dir: bool) -> anyhow::Result<()> {
+fn cmd_roundtrip(input: &Path, compressor_name: &str, force_dir: bool, workers: usize) -> anyhow::Result<()> {
     use std::time::Instant;
 
     let is_dir = force_dir || input.is_dir();
@@ -178,8 +199,18 @@ fn cmd_roundtrip(input: &Path, compressor_name: &str, force_dir: bool) -> anyhow
         .find(|c| c.name() == compressor_name)
         .context("unknown compressor")?;
 
+    // When `--workers > 1` and the user picked padoc on a directory input, run
+    // the parallel `compress_rank` + `merge_shards` path so we round-trip
+    // exactly what `bench compress --workers N` produces.  This is how we
+    // catch any merge-introduced lossiness before going to the cluster.
+    let use_parallel = workers > 1 && compressor_name == "padoc" && is_dir;
+
     let compress_start = Instant::now();
-    let artifact = compressor.compress(&trace)?;
+    let artifact = if use_parallel {
+        run_parallel_for_roundtrip(input, workers)?
+    } else {
+        compressor.compress(&trace)?
+    };
     let compress_secs = compress_start.elapsed().as_secs_f64();
     let compressed_bytes = artifact.bytes.len() as u64;
 
@@ -239,6 +270,44 @@ fn cmd_roundtrip(input: &Path, compressor_name: &str, force_dir: bool) -> anyhow
     Ok(())
 }
 
+fn run_parallel_for_roundtrip(input: &Path, workers: usize) -> anyhow::Result<padoc::baselines::CompressArtifact> {
+    use padoc::baselines::CompressArtifact;
+    use padoc::trace::list_trace_files;
+    use rayon::prelude::*;
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers.max(1))
+        .build()?;
+    let files = list_trace_files(input);
+    if files.is_empty() {
+        anyhow::bail!("no rank files in {}", input.display());
+    }
+    let cfg = CompressorConfig::default();
+    let start = std::time::Instant::now();
+    let shards = pool.install(|| -> Result<Vec<padoc::compressor::RankShard>, padoc::Error> {
+        files
+            .par_iter()
+            .map(|file| -> Result<padoc::compressor::RankShard, padoc::Error> {
+                let trace = Trace::from_file(file)?;
+                let rank = trace
+                    .rank_ids()
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| {
+                        file.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown")
+                            .to_string()
+                    });
+                Ok(TemplateCompressor::compress_rank(&cfg, &rank, &trace))
+            })
+            .collect()
+    })?;
+    let compressed = padoc::compressor::merge_shards(&cfg, shards)?;
+    let bytes = compressed.to_bytes(3)?;
+    Ok(CompressArtifact::new(bytes, start.elapsed().as_secs_f64()))
+}
+
 fn cmd_analyze(trace_path: &Path, task: &str, in_situ: bool) -> anyhow::Result<()> {
     let registry = analysis::registry();
     let task = registry.iter().find(|t| t.name() == task).context("unknown task")?;
@@ -271,6 +340,8 @@ fn cmd_bench_compress(
     manifest: Option<&Path>,
     filter: Option<&[String]>,
     per_rank: bool,
+    workers: usize,
+    zstd_level: i32,
 ) -> anyhow::Result<()> {
     let all = baselines::registry();
     let compressors: Vec<Box<dyn BaselineCompressor>> = match filter {
@@ -304,7 +375,13 @@ fn cmd_bench_compress(
         anyhow::bail!("no datasets — pass --datasets or --manifest");
     }
 
-    let records = if per_rank {
+    let only_padoc =
+        compressors.len() == 1 && compressors.iter().any(|c| c.name() == "padoc");
+
+    let records = if workers > 1 && only_padoc {
+        let cfg = CompressorConfig::default();
+        bench::run_padoc_parallel(&cfg, &streaming, workers, zstd_level)?
+    } else if per_rank {
         bench::run_compression_streaming(&compressors, &streaming)?
     } else {
         let refs: Vec<bench::runner::DatasetRef> = streaming

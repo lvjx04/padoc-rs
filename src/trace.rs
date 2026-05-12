@@ -96,7 +96,11 @@ impl Trace {
     }
 }
 
-fn list_trace_files(dir: &Path) -> Vec<PathBuf> {
+/// Return every chrome-trace file under `dir`, sorted.  Used both by
+/// `Trace::from_dir` (which loads them all into a single in-memory trace)
+/// and by the streaming bench runner (which loads one file at a time so
+/// 1024-rank datasets don't exhaust RAM).
+pub fn list_trace_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(it) => it,

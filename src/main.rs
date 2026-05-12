@@ -73,11 +73,25 @@ enum Cmd {
 #[derive(Subcommand)]
 enum BenchCmd {
     /// Compression matrix.
+    ///
+    /// Two ways to feed datasets:
+    ///   --datasets <PATH>...  : direct paths (file or directory)
+    ///   --manifest <PATH>     : JSON manifest with `{datasets:[{name, path,
+    ///                           is_directory, gpus}]}`.
+    /// Pass `--per-rank` to stream every rank file individually instead of
+    /// loading the whole directory into RAM at once — required for 1024-rank
+    /// llama-style datasets that don't fit otherwise.
     Compress {
         #[arg(long, value_delimiter = ',')]
         datasets: Vec<PathBuf>,
+        #[arg(long)]
+        manifest: Option<PathBuf>,
         #[arg(long, value_delimiter = ',')]
         compressors: Option<Vec<String>>,
+        /// Process each rank file independently (lower RAM, no cross-rank
+        /// template sharing).
+        #[arg(long, default_value_t = false)]
+        per_rank: bool,
     },
     /// Analysis matrix.
     Analyze {
@@ -113,7 +127,9 @@ fn main() -> anyhow::Result<()> {
         Cmd::Analyze { trace, task, in_situ } => cmd_analyze(&trace, &task, in_situ),
         Cmd::List => cmd_list(),
         Cmd::Bench { sub } => match sub {
-            BenchCmd::Compress { datasets, compressors } => cmd_bench_compress(&datasets, compressors.as_deref()),
+            BenchCmd::Compress { datasets, manifest, compressors, per_rank } => {
+                cmd_bench_compress(&datasets, manifest.as_deref(), compressors.as_deref(), per_rank)
+            }
             BenchCmd::Analyze { datasets } => cmd_bench_analyze(&datasets),
             BenchCmd::Scalability { dimension, values, compressor } => cmd_bench_scalability(&dimension, &values, &compressor),
             BenchCmd::Parallel { dataset_dir, workers, compressor } => cmd_bench_parallel(&dataset_dir, &workers, &compressor),
@@ -250,21 +266,57 @@ fn cmd_list() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_bench_compress(datasets: &[PathBuf], filter: Option<&[String]>) -> anyhow::Result<()> {
+fn cmd_bench_compress(
+    datasets: &[PathBuf],
+    manifest: Option<&Path>,
+    filter: Option<&[String]>,
+    per_rank: bool,
+) -> anyhow::Result<()> {
     let all = baselines::registry();
     let compressors: Vec<Box<dyn BaselineCompressor>> = match filter {
         Some(names) => all.into_iter().filter(|c| names.iter().any(|n| n == c.name())).collect(),
         None => all,
     };
-    let refs: Vec<bench::runner::DatasetRef> = datasets
-        .iter()
-        .map(|p| bench::runner::DatasetRef {
-            name: p.file_name().and_then(|n| n.to_str()).unwrap_or("trace"),
-            path: p,
-            is_dir: p.is_dir(),
-        })
-        .collect();
-    let records = bench::run_compression_matrix(&compressors, &refs)?;
+
+    // Build the working set from CLI `--datasets` and/or `--manifest`.
+    let mut streaming: Vec<bench::StreamingDataset> = Vec::new();
+    for p in datasets {
+        let is_dir = p.is_dir();
+        streaming.push(bench::StreamingDataset {
+            name: p.file_name().and_then(|n| n.to_str()).unwrap_or("trace").to_string(),
+            path: p.clone(),
+            is_dir,
+        });
+    }
+    if let Some(mpath) = manifest {
+        let m = bench::Manifest::load(mpath)
+            .with_context(|| format!("loading manifest {}", mpath.display()))?;
+        for entry in m.datasets {
+            streaming.push(bench::StreamingDataset {
+                name: entry.name,
+                path: entry.path,
+                is_dir: entry.is_directory,
+            });
+        }
+    }
+
+    if streaming.is_empty() {
+        anyhow::bail!("no datasets — pass --datasets or --manifest");
+    }
+
+    let records = if per_rank {
+        bench::run_compression_streaming(&compressors, &streaming)?
+    } else {
+        let refs: Vec<bench::runner::DatasetRef> = streaming
+            .iter()
+            .map(|d| bench::runner::DatasetRef {
+                name: &d.name,
+                path: &d.path,
+                is_dir: d.is_dir,
+            })
+            .collect();
+        bench::run_compression_matrix(&compressors, &refs)?
+    };
     print!("{}", bench::render_compression_table(&records));
     Ok(())
 }

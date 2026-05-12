@@ -56,17 +56,44 @@ impl Trace {
     }
 
     /// Load a single chrome-trace JSON file.
+    ///
+    /// Two ingest paths:
+    ///
+    /// * **Streaming** (default) — `serde_json::Deserializer::from_reader` driven
+    ///   by a hand-rolled `Visitor` that pulls one event at a time off the
+    ///   `traceEvents` array.  Peak memory tracks the **decoded** trace size
+    ///   (~0.5–1× the JSON file), not the JSON-tree expansion (~5–10×).
+    ///   Used for everything ≥ a small file threshold so 1024-rank +
+    ///   parallel-worker setups don't blow up RAM.
+    /// * **simd-json** — fast SIMD parser, but builds a full owned tree
+    ///   first.  Reserved for tiny files (<32 MiB) where the absolute
+    ///   parsing speed wins and the tree is too small to matter.
+    ///
+    /// Both paths produce identical [`Trace`] structures.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        let metadata = std::fs::metadata(path)?;
+        let size = metadata.len();
+        // Files this small load + parse faster via simd-json's full-tree
+        // path; memory is a non-issue at this size.
+        const SIMD_FAST_PATH_LIMIT: u64 = 32 * 1024 * 1024;
+        if size <= SIMD_FAST_PATH_LIMIT {
+            let bytes = std::fs::read(path)?;
+            return parse_chrome_trace_bytes(bytes, path);
+        }
+        crate::trace_stream::parse_chrome_trace_stream(path)
+    }
+
+    /// Force the legacy full-tree parser.  Useful for benchmarking and as a
+    /// fallback when the streaming path hits an unexpected JSON shape.
+    pub fn from_file_full_tree(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
         let bytes = std::fs::read(path)?;
-        // simd-json caps inputs at ~4 GiB. Fall back to serde_json for very
-        // large traces (the unifolm rank dumps are 6 GiB each).
-        let trace = if bytes.len() > 3 * 1024 * 1024 * 1024 {
-            parse_chrome_trace_bytes_serde(&bytes, path)?
+        if bytes.len() > 3 * 1024 * 1024 * 1024 {
+            parse_chrome_trace_bytes_serde(&bytes, path)
         } else {
-            parse_chrome_trace_bytes(bytes, path)?
-        };
-        Ok(trace)
+            parse_chrome_trace_bytes(bytes, path)
+        }
     }
 
     /// Load every `*.json` (and `*.json.gz`) in a directory, treating each
@@ -175,7 +202,16 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
 
         let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
 
-        let pid: i64 = obj.get("pid").and_then(|v| v.as_i64()).unwrap_or(0);
+        // pid/tid can be process-label strings (e.g. "GPU 0") in some
+        // chrome-trace dialects; truncate floats and tolerate strings.
+        let pid: i64 = obj
+            .get("pid")
+            .and_then(|v| {
+                v.as_i64()
+                    .or_else(|| v.as_f64().map(|f| f as i64))
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+            })
+            .unwrap_or(0);
         let raw_tid: String = match obj.get("tid").cloned().unwrap_or(Value::Static(simd_json::StaticNode::Null)) {
             Value::String(s) => s.into(),
             Value::Static(simd_json::StaticNode::I64(n)) => n.to_string(),
@@ -252,10 +288,22 @@ fn build_event(
 ) -> Event {
     use simd_json::OwnedValue as Value;
     use simd_json::prelude::*;
-    let ts = obj.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
-    let dur = obj.get("dur").and_then(|v| v.as_i64());
+    // simd-json's `.as_i64()` returns None for f64 numbers; chrome-traces
+    // emitted by Kineto+ROCm write `ts`/`dur` as floats.  Falling through
+    // to `unwrap_or(0)` would silently zero out every such event's
+    // timestamp.  Truncate floats explicitly to match the streaming
+    // parser's behaviour and the legacy serde_json path.
+    let ts = obj
+        .get("ts")
+        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+        .unwrap_or(0);
+    let dur = obj
+        .get("dur")
+        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)));
     let cat = obj.get("cat").and_then(|v| v.as_str()).map(str::to_owned);
-    let id = obj.get("id").and_then(|v| v.as_i64());
+    let id = obj
+        .get("id")
+        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)));
     let bp = obj.get("bp").and_then(|v| v.as_str()).map(str::to_owned);
     let s = obj.get("s").and_then(|v| v.as_str()).map(str::to_owned);
 

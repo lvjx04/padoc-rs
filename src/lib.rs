@@ -33,6 +33,7 @@ pub mod slp;
 pub mod storage_breakdown;
 pub mod synthetic;
 pub mod trace;
+pub mod trace_stream;
 pub mod tree_stats;
 pub mod utils;
 pub mod verify;

@@ -120,6 +120,34 @@ enum BenchCmd {
         #[arg(long, value_delimiter = ',')]
         datasets: Vec<PathBuf>,
     },
+    /// Run analysis tasks on pre-saved compressed artifacts.
+    /// For padoc artifacts the analysis runs in-situ on `CompressedTrace`;
+    /// for every other compressor we decompress to a `Trace` first, then
+    /// run `task.run_raw`.  Reports per-(compressor, dataset, task) timings:
+    /// load (read+decompress for baselines / read for padoc), analyze,
+    /// total.
+    AnalyzeArtifacts {
+        /// Directories holding artifacts named `<dataset>.<compressor>.{zst|bin}`.
+        /// Multiple `--artifact-dir` may be passed and they're searched in order.
+        #[arg(long, value_delimiter = ',')]
+        artifact_dir: Vec<PathBuf>,
+        /// Comma-separated compressor names (raw_json, gzip_json, scalatrace,
+        /// tracezip, padoc, …).  Only artifacts for these compressors are loaded.
+        #[arg(long, value_delimiter = ',')]
+        compressors: Vec<String>,
+        /// Comma-separated dataset stems (e.g. `qwen3,llama_full`).  These
+        /// must match the prefix used by `bench compress --out-dir`.
+        #[arg(long, value_delimiter = ',')]
+        datasets: Vec<String>,
+        /// Comma-separated analysis task names.  See `padoc list`.
+        #[arg(long, value_delimiter = ',')]
+        tasks: Vec<String>,
+        /// Repeat each (compressor, dataset, task) measurement N times and
+        /// report median timings.  Useful for noisy disks or page-cache
+        /// warm-up effects.
+        #[arg(long, default_value_t = 1)]
+        repeat: usize,
+    },
     /// Scalability sweep on synthetic traces.
     Scalability {
         #[arg(long, default_value = "gpus")]
@@ -161,6 +189,8 @@ fn main() -> anyhow::Result<()> {
                 )
             }
             BenchCmd::Analyze { datasets } => cmd_bench_analyze(&datasets),
+            BenchCmd::AnalyzeArtifacts { artifact_dir, compressors, datasets, tasks, repeat } =>
+                cmd_bench_analyze_artifacts(&artifact_dir, &compressors, &datasets, &tasks, repeat),
             BenchCmd::Scalability { dimension, values, compressor } => cmd_bench_scalability(&dimension, &values, &compressor),
             BenchCmd::Parallel { dataset_dir, workers, compressor } => cmd_bench_parallel(&dataset_dir, &workers, &compressor),
         },
@@ -428,6 +458,108 @@ fn cmd_bench_analyze(datasets: &[PathBuf]) -> anyhow::Result<()> {
     let records = bench::run_analysis_matrix(&compressors, &tasks, &refs)?;
     println!("{}", serde_json::to_string_pretty(&records)?);
     Ok(())
+}
+
+fn cmd_bench_analyze_artifacts(
+    artifact_dirs: &[PathBuf],
+    compressor_names: &[String],
+    dataset_names: &[String],
+    task_names: &[String],
+    repeat: usize,
+) -> anyhow::Result<()> {
+    if artifact_dirs.is_empty() {
+        anyhow::bail!("pass at least one --artifact-dir");
+    }
+    let registry = baselines::registry();
+    let compressors: Vec<&dyn padoc::baselines::BaselineCompressor> = compressor_names
+        .iter()
+        .map(|n| {
+            registry
+                .iter()
+                .find(|c| c.name() == n)
+                .map(|b| &**b)
+                .ok_or_else(|| anyhow::anyhow!("unknown compressor `{n}`"))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let task_registry = analysis::registry();
+    let tasks: Vec<&dyn padoc::analysis::AnalysisTask> = task_names
+        .iter()
+        .map(|n| {
+            task_registry
+                .iter()
+                .find(|t| t.name() == n)
+                .map(|t| &**t)
+                .ok_or_else(|| anyhow::anyhow!("unknown task `{n}`"))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let repeat = repeat.max(1);
+
+    println!("compressor\tdataset\ttask\tload_secs\tanalyze_secs\ttotal_secs\tartifact_bytes");
+    for c in &compressors {
+        for ds in dataset_names {
+            // Find the artifact file: try .padoc.zst first, then .{compressor}.bin.
+            let candidate_names: Vec<String> = if c.name() == "padoc" {
+                vec![format!("{ds}.padoc.zst")]
+            } else {
+                vec![format!("{ds}.{}.bin", c.name())]
+            };
+            let path = candidate_names.iter().find_map(|cand| {
+                artifact_dirs.iter().find_map(|d| {
+                    let p = d.join(cand);
+                    if p.exists() { Some(p) } else { None }
+                })
+            });
+            let Some(path) = path else {
+                eprintln!(
+                    "warn: no artifact for compressor={} dataset={} (looked under {:?})",
+                    c.name(),
+                    ds,
+                    artifact_dirs
+                );
+                continue;
+            };
+            let bytes_on_disk = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+            for task in &tasks {
+                let mut load_samples: Vec<f64> = Vec::with_capacity(repeat);
+                let mut analyze_samples: Vec<f64> = Vec::with_capacity(repeat);
+                for _ in 0..repeat {
+                    let load_start = std::time::Instant::now();
+                    if c.name() == "padoc" {
+                        let ct = padoc::trace::CompressedTrace::read_from_path(&path)?;
+                        let load = load_start.elapsed().as_secs_f64();
+                        load_samples.push(load);
+                        let an_start = std::time::Instant::now();
+                        let _ = task.run_in_situ(&ct)?;
+                        analyze_samples.push(an_start.elapsed().as_secs_f64());
+                    } else {
+                        let bytes = std::fs::read(&path)?;
+                        let trace = c.decompress(&bytes)?;
+                        let load = load_start.elapsed().as_secs_f64();
+                        load_samples.push(load);
+                        let an_start = std::time::Instant::now();
+                        let _ = task.run_raw(&trace)?;
+                        analyze_samples.push(an_start.elapsed().as_secs_f64());
+                    }
+                }
+                let load_med = median(&mut load_samples);
+                let an_med = median(&mut analyze_samples);
+                println!(
+                    "{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{}",
+                    c.name(), ds, task.name(),
+                    load_med, an_med, load_med + an_med,
+                    bytes_on_disk
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn median(xs: &mut [f64]) -> f64 {
+    if xs.is_empty() { return f64::NAN; }
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    xs[xs.len() / 2]
 }
 
 fn cmd_bench_scalability(dimension: &str, values: &[usize], compressor_name: &str) -> anyhow::Result<()> {

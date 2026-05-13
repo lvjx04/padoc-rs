@@ -3,7 +3,7 @@
 use padoc::analysis::{AnalysisTask, OperatorHotspot, StreamLoadBalance};
 use padoc::baselines::{BaselineCompressor, GzipMsgpackCompressor, PadocCompressor, RawJsonCompressor, ScalaTraceCompressor, TraceZipCompressor};
 use padoc::compressor::{all_ablation_presets, CompressorConfig, TemplateCompressor};
-use padoc::storage_breakdown::measure_storage;
+use padoc::storage_breakdown::{measure_on_disk_regions, measure_storage};
 use padoc::synthetic::{generate_trace, SyntheticTraceSpec};
 use padoc::trace::CompressedTrace;
 use padoc::tree_stats::measure_tree_statistics;
@@ -109,6 +109,22 @@ fn storage_breakdown_components_sum_to_total() {
         breakdown.total_bytes,
         breakdown.template_bytes + breakdown.structure_bytes + breakdown.metadata_bytes
     );
+}
+
+#[test]
+fn on_disk_breakdown_reports_expected_regions() {
+    let trace = generate_trace(&small_spec());
+    let mut compressor = TemplateCompressor::new();
+    let compressed = compressor.compress(&trace).unwrap();
+    let encoded = compressed.to_bytes(3).unwrap();
+    let breakdown = measure_on_disk_regions(&compressed, Some(encoded.len() as u64), 3).unwrap();
+    let names: Vec<&str> = breakdown.regions.iter().map(|r| r.name.as_str()).collect();
+    assert!(names.contains(&"template_headers"));
+    assert!(names.contains(&"ts_columns"));
+    assert!(names.contains(&"dur_columns"));
+    assert!(names.contains(&"rank_node_tree"));
+    assert!(breakdown.regions.iter().all(|r| r.msgpack_bytes > 0));
+    assert!(breakdown.regions.iter().all(|r| r.zstd_bytes > 0));
 }
 
 #[test]

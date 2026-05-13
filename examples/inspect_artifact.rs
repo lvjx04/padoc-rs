@@ -1,5 +1,6 @@
 use padoc::event::{ArgColumn, DigitColumn, NameNums, NumColumn, PhaseColumn, StringColumn, Template};
 use padoc::node::Node;
+use padoc::storage_breakdown::measure_on_disk_regions;
 use padoc::trace::CompressedTrace;
 use std::env;
 use std::mem::size_of;
@@ -41,8 +42,30 @@ struct Stats {
 }
 
 fn main() -> anyhow::Result<()> {
-    let path = env::args().nth(1).map(PathBuf::from).expect("usage: inspect_artifact <artifact>");
-    let on_disk = std::fs::metadata(&path)?.len();
+    let mut artifact: Option<PathBuf> = None;
+    let mut on_disk = false;
+    let mut zstd_level = 3;
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--on-disk" => on_disk = true,
+            "--zstd-level" => {
+                let value = args
+                    .next()
+                    .expect("usage: inspect_artifact [--on-disk] [--zstd-level N] <artifact>");
+                zstd_level = value.parse()?;
+            }
+            "-h" | "--help" => {
+                eprintln!("usage: inspect_artifact [--on-disk] [--zstd-level N] <artifact>");
+                return Ok(());
+            }
+            _ if artifact.is_none() => artifact = Some(PathBuf::from(arg)),
+            _ => anyhow::bail!("unexpected argument: {arg}"),
+        }
+    }
+
+    let path = artifact.expect("usage: inspect_artifact [--on-disk] [--zstd-level N] <artifact>");
+    let artifact_bytes = std::fs::metadata(&path)?.len();
     eprintln!("loading {}", path.display());
     let trace = CompressedTrace::read_from_path(&path)?;
     let mut s = Stats { templates: trace.templates.len(), ..Stats::default() };
@@ -90,7 +113,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("on_disk_bytes\t{}", on_disk);
+    println!("on_disk_bytes\t{}", artifact_bytes);
     println!("templates\t{}", s.templates);
     println!("cpu_templates\t{}", s.cpu_templates);
     println!("gpu_templates\t{}", s.gpu_templates);
@@ -137,6 +160,21 @@ fn main() -> anyhow::Result<()> {
         + s.arg_payload_bytes
         + s.string_payload_bytes;
     print_bytes("accounted_selected_total", accounted);
+
+    if on_disk {
+        let breakdown = measure_on_disk_regions(&trace, Some(artifact_bytes), zstd_level)?;
+        println!("on_disk_region_zstd_level\t{}", breakdown.zstd_level);
+        if let Some(bytes) = breakdown.artifact_bytes {
+            println!("on_disk_region_artifact_bytes\t{bytes}");
+        }
+        println!("on_disk_region\tname\tmsgpack_bytes\tzstd_bytes");
+        for region in breakdown.regions {
+            println!(
+                "on_disk_region\t{}\t{}\t{}",
+                region.name, region.msgpack_bytes, region.zstd_bytes
+            );
+        }
+    }
     Ok(())
 }
 

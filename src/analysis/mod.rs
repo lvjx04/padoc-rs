@@ -19,6 +19,7 @@
 use crate::trace::{CompressedTrace, Trace};
 use crate::Result;
 use serde_json::Value;
+use std::time::Instant;
 
 mod compute_comm_overlap;
 mod kernel_class;
@@ -40,6 +41,30 @@ pub trait AnalysisTask: Send + Sync {
     fn run_in_situ(&self, _compressed: &CompressedTrace) -> Result<Value> {
         Err(crate::Error::Other("in-situ not implemented for this task".into()))
     }
+}
+
+pub(crate) fn profiling_enabled() -> bool {
+    std::env::var_os("PADOC_ANALYSIS_PROFILE").is_some()
+}
+
+pub(crate) fn profiled_result(result: Value, phases: Vec<(&str, f64)>) -> Value {
+    if !profiling_enabled() {
+        return result;
+    }
+    let total_secs: f64 = phases.iter().map(|(_, secs)| *secs).sum();
+    serde_json::json!({
+        "result": result,
+        "profile": {
+            "total_profiled_secs": total_secs,
+            "phases": phases.into_iter().map(|(name, secs)| {
+                serde_json::json!({"name": name, "secs": secs})
+            }).collect::<Vec<_>>(),
+        }
+    })
+}
+
+pub(crate) fn elapsed_secs(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64()
 }
 
 pub fn registry() -> Vec<Box<dyn AnalysisTask>> {

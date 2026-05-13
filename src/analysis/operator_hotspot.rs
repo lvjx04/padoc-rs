@@ -3,7 +3,7 @@
 use ahash::AHashMap;
 use serde_json::Value;
 
-use crate::analysis::AnalysisTask;
+use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
 use crate::event::Template;
 use crate::trace::{CompressedTrace, Trace};
 use crate::Result;
@@ -30,13 +30,20 @@ impl AnalysisTask for OperatorHotspot {
     fn supports_in_situ(&self) -> bool { true }
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
+        let start = std::time::Instant::now();
         let mut tally: AHashMap<String, i64> = AHashMap::new();
         for tmpl in &compressed.templates {
             let name = tmpl.name_pattern().to_string();
             let total = tmpl.dur_total();
             *tally.entry(name).or_insert(0) += total;
         }
-        Ok(top_n_to_json(tally, self.top_k.max(20)))
+        let tally_secs = elapsed_secs(start);
+        let start = std::time::Instant::now();
+        let result = top_n_to_json(tally, self.top_k.max(20));
+        Ok(profiled_result(result, vec![
+            ("template_tally", tally_secs),
+            ("sort_top_n", elapsed_secs(start)),
+        ]))
     }
 }
 

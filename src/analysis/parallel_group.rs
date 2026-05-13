@@ -29,7 +29,7 @@
 use ahash::AHashMap;
 use serde_json::Value;
 
-use crate::analysis::AnalysisTask;
+use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
 use crate::analysis::kernel_class::is_nccl_kernel;
 use crate::event::Template;
 use crate::node::{InstanceId, Node, TemplateId};
@@ -62,6 +62,7 @@ impl AnalysisTask for ParallelGroup {
     fn supports_in_situ(&self) -> bool { true }
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
+        let start = std::time::Instant::now();
         // Per template: classify once into compute / comm / ignore.
         // 0 = ignore (not a GPU kernel), 1 = compute, 2 = comm.
         let class: Vec<u8> = compressed
@@ -74,7 +75,9 @@ impl AnalysisTask for ParallelGroup {
                 _ => 0,
             })
             .collect();
+        let classify_secs = elapsed_secs(start);
 
+        let start = std::time::Instant::now();
         let mut compute: AHashMap<String, i64> = AHashMap::new();
         let mut comm:    AHashMap<String, i64> = AHashMap::new();
         for (rank, processes) in &compressed.ranks {
@@ -93,7 +96,14 @@ impl AnalysisTask for ParallelGroup {
                 }
             }
         }
-        Ok(load_balance_json(&compute, &comm))
+        let tree_walk_secs = elapsed_secs(start);
+        let start = std::time::Instant::now();
+        let result = load_balance_json(&compute, &comm);
+        Ok(profiled_result(result, vec![
+            ("template_classification", classify_secs),
+            ("rank_tree_walk", tree_walk_secs),
+            ("summary_json", elapsed_secs(start)),
+        ]))
     }
 }
 

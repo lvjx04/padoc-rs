@@ -3,7 +3,7 @@
 use ahash::AHashMap;
 use serde_json::Value;
 
-use crate::analysis::AnalysisTask;
+use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
 use crate::event::{NumColumn, StringColumn, Template};
 use crate::trace::{CompressedTrace, Trace};
 use crate::Result;
@@ -27,6 +27,7 @@ impl AnalysisTask for StreamLoadBalance {
     fn supports_in_situ(&self) -> bool { true }
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
+        let start = std::time::Instant::now();
         let mut by_stream: AHashMap<(i64, &str), i64> = AHashMap::new();
         for tmpl in &compressed.templates {
             if let Template::Gpu(t) = tmpl {
@@ -50,7 +51,13 @@ impl AnalysisTask for StreamLoadBalance {
                 }
             }
         }
-        Ok(to_sorted_json(by_stream))
+        let aggregate_secs = elapsed_secs(start);
+        let start = std::time::Instant::now();
+        let result = to_sorted_json(by_stream);
+        Ok(profiled_result(result, vec![
+            ("template_stream_aggregate", aggregate_secs),
+            ("sort_json", elapsed_secs(start)),
+        ]))
     }
 }
 

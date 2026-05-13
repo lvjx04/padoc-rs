@@ -9,7 +9,7 @@ use ahash::AHashMap;
 use serde_json::Value;
 
 use crate::analysis::kernel_class::is_nccl_kernel;
-use crate::analysis::AnalysisTask;
+use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
 use crate::event::Template;
 use crate::trace::{CompressedTrace, Trace};
 use crate::Result;
@@ -52,6 +52,7 @@ impl AnalysisTask for ComputeCommOverlap {
     fn supports_in_situ(&self) -> bool { true }
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
+        let start = std::time::Instant::now();
         let mut by_rank: AHashMap<String, RankIntervals> = AHashMap::new();
 
         for (rank, processes) in &compressed.ranks {
@@ -82,8 +83,14 @@ impl AnalysisTask for ComputeCommOverlap {
                 }
             }
         }
+        let collect_secs = elapsed_secs(start);
 
-        Ok(to_json(by_rank))
+        let start = std::time::Instant::now();
+        let result = to_json(by_rank);
+        Ok(profiled_result(result, vec![
+            ("rank_interval_collect", collect_secs),
+            ("interval_merge_and_json", elapsed_secs(start)),
+        ]))
     }
 }
 

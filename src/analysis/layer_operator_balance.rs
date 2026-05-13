@@ -15,7 +15,7 @@
 use ahash::AHashMap;
 use serde_json::Value;
 
-use crate::analysis::AnalysisTask;
+use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
 use crate::slp::decode_name_nums;
 use crate::trace::{CompressedTrace, Trace};
 use crate::Result;
@@ -51,6 +51,7 @@ impl AnalysisTask for LayerOperatorBalance {
     fn supports_in_situ(&self) -> bool { true }
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
+        let start = std::time::Instant::now();
         let mut by_layer: AHashMap<i64, i64> = AHashMap::new();
         for tmpl in &compressed.templates {
             // GPU kernel names rarely carry "layers.<N>." — skip to save work.
@@ -74,7 +75,13 @@ impl AnalysisTask for LayerOperatorBalance {
                 }
             }
         }
-        Ok(to_json(by_layer))
+        let aggregate_secs = elapsed_secs(start);
+        let start = std::time::Instant::now();
+        let result = to_json(by_layer);
+        Ok(profiled_result(result, vec![
+            ("template_layer_aggregate", aggregate_secs),
+            ("sort_json", elapsed_secs(start)),
+        ]))
     }
 }
 

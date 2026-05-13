@@ -1,0 +1,183 @@
+bind [127.0.0.1]:6060: Address already in use
+channel_setup_fwd_listener_tcpip: cannot listen to port: 6060
+Could not request local forwarding.
+[2m2026-05-13T01:26:01.553858Z[0m [32m INFO[0m [leworldmodel_full] padoc-parallel: 2 ranks, 32 workers
+[2m2026-05-13T01:26:07.868156Z[0m [32m INFO[0m [leworldmodel_full] 1/2 ranks compressed
+[2m2026-05-13T01:26:12.601806Z[0m [32m INFO[0m [leworldmodel_full] 2/2 ranks compressed
+[2m2026-05-13T01:26:19.360178Z[0m [32m INFO[0m [leworldmodel_full] padoc-parallel done: parallel=12.02s merge=2.68s serialize=3.11s total=17.81s ratio=23.88x
+[2m2026-05-13T01:26:19.706349Z[0m [32m INFO[0m [qwen3_full] padoc-parallel: 256 ranks, 32 workers
+[2m2026-05-13T01:26:24.701664Z[0m [32m INFO[0m [qwen3_full] 1/256 ranks compressed
+[2m2026-05-13T01:26:36.367391Z[0m [32m INFO[0m [qwen3_full] 8/256 ranks compressed
+[2m2026-05-13T01:26:37.917463Z[0m [32m INFO[0m [qwen3_full] 16/256 ranks compressed
+[2m2026-05-13T01:26:38.602472Z[0m [32m INFO[0m [qwen3_full] 24/256 ranks compressed
+[2m2026-05-13T01:26:38.976302Z[0m [32m INFO[0m [qwen3_full] 32/256 ranks compressed
+[2m2026-05-13T01:26:39.625840Z[0m [32m INFO[0m [qwen3_full] 40/256 ranks compressed
+[2m2026-05-13T01:26:40.889978Z[0m [32m INFO[0m [qwen3_full] 48/256 ranks compressed
+[2m2026-05-13T01:26:42.018440Z[0m [32m INFO[0m [qwen3_full] 56/256 ranks compressed
+[2m2026-05-13T01:26:42.706172Z[0m [32m INFO[0m [qwen3_full] 64/256 ranks compressed
+[2m2026-05-13T01:26:43.006631Z[0m [32m INFO[0m [qwen3_full] 72/256 ranks compressed
+[2m2026-05-13T01:26:43.229877Z[0m [32m INFO[0m [qwen3_full] 80/256 ranks compressed
+[2m2026-05-13T01:26:43.460449Z[0m [32m INFO[0m [qwen3_full] 88/256 ranks compressed
+[2m2026-05-13T01:26:44.010081Z[0m [32m INFO[0m [qwen3_full] 96/256 ranks compressed
+[2m2026-05-13T01:26:44.559401Z[0m [32m INFO[0m [qwen3_full] 104/256 ranks compressed
+[2m2026-05-13T01:26:45.458632Z[0m [32m INFO[0m [qwen3_full] 112/256 ranks compressed
+[2m2026-05-13T01:26:46.749984Z[0m [32m INFO[0m [qwen3_full] 120/256 ranks compressed
+[2m2026-05-13T01:26:47.021253Z[0m [32m INFO[0m [qwen3_full] 128/256 ranks compressed
+[2m2026-05-13T01:26:47.606819Z[0m [32m INFO[0m [qwen3_full] 136/256 ranks compressed
+[2m2026-05-13T01:26:48.076351Z[0m [32m INFO[0m [qwen3_full] 144/256 ranks compressed
+[2m2026-05-13T01:26:48.560553Z[0m [32m INFO[0m [qwen3_full] 152/256 ranks compressed
+[2m2026-05-13T01:26:49.198674Z[0m [32m INFO[0m [qwen3_full] 160/256 ranks compressed
+[2m2026-05-13T01:26:49.728652Z[0m [32m INFO[0m [qwen3_full] 168/256 ranks compressed
+[2m2026-05-13T01:26:50.208199Z[0m [32m INFO[0m [qwen3_full] 176/256 ranks compressed
+[2m2026-05-13T01:26:50.912709Z[0m [32m INFO[0m [qwen3_full] 184/256 ranks compressed
+[2m2026-05-13T01:26:51.487392Z[0m [32m INFO[0m [qwen3_full] 192/256 ranks compressed
+[2m2026-05-13T01:26:52.109091Z[0m [32m INFO[0m [qwen3_full] 200/256 ranks compressed
+[2m2026-05-13T01:26:52.518569Z[0m [32m INFO[0m [qwen3_full] 208/256 ranks compressed
+[2m2026-05-13T01:26:53.368088Z[0m [32m INFO[0m [qwen3_full] 216/256 ranks compressed
+[2m2026-05-13T01:26:54.086306Z[0m [32m INFO[0m [qwen3_full] 224/256 ranks compressed
+[2m2026-05-13T01:26:54.644332Z[0m [32m INFO[0m [qwen3_full] 232/256 ranks compressed
+[2m2026-05-13T01:26:55.122517Z[0m [32m INFO[0m [qwen3_full] 240/256 ranks compressed
+[2m2026-05-13T01:26:55.415914Z[0m [32m INFO[0m [qwen3_full] 248/256 ranks compressed
+[2m2026-05-13T01:26:55.720749Z[0m [32m INFO[0m [qwen3_full] 256/256 ranks compressed
+[2m2026-05-13T01:27:32.364237Z[0m [32m INFO[0m [qwen3_full] padoc-parallel done: parallel=36.06s merge=8.64s serialize=27.96s total=72.66s ratio=26.26x
+[2m2026-05-13T01:27:39.200992Z[0m [32m INFO[0m [unifolm_full] padoc-parallel: 4 ranks, 32 workers
+[2m2026-05-13T01:30:06.670580Z[0m [32m INFO[0m [unifolm_full] 1/4 ranks compressed
+[2m2026-05-13T01:30:17.963638Z[0m [32m INFO[0m [unifolm_full] 4/4 ranks compressed
+[2m2026-05-13T01:32:21.983079Z[0m [32m INFO[0m [unifolm_full] padoc-parallel done: parallel=170.47s merge=41.40s serialize=70.91s total=282.78s ratio=31.63x
+[2m2026-05-13T01:32:43.378876Z[0m [32m INFO[0m [llama_full] padoc-parallel: 1024 ranks, 32 workers
+[2m2026-05-13T01:32:45.667515Z[0m [32m INFO[0m [llama_full] 1/1024 ranks compressed
+[2m2026-05-13T01:32:45.987722Z[0m [32m INFO[0m [llama_full] 8/1024 ranks compressed
+[2m2026-05-13T01:32:46.194975Z[0m [32m INFO[0m [llama_full] 16/1024 ranks compressed
+[2m2026-05-13T01:32:46.354308Z[0m [32m INFO[0m [llama_full] 24/1024 ranks compressed
+[2m2026-05-13T01:32:46.723911Z[0m [32m INFO[0m [llama_full] 32/1024 ranks compressed
+[2m2026-05-13T01:32:48.535726Z[0m [32m INFO[0m [llama_full] 40/1024 ranks compressed
+[2m2026-05-13T01:32:48.898260Z[0m [32m INFO[0m [llama_full] 48/1024 ranks compressed
+[2m2026-05-13T01:32:49.229437Z[0m [32m INFO[0m [llama_full] 56/1024 ranks compressed
+[2m2026-05-13T01:32:49.584946Z[0m [32m INFO[0m [llama_full] 64/1024 ranks compressed
+[2m2026-05-13T01:32:50.826752Z[0m [32m INFO[0m [llama_full] 72/1024 ranks compressed
+[2m2026-05-13T01:32:51.452933Z[0m [32m INFO[0m [llama_full] 80/1024 ranks compressed
+[2m2026-05-13T01:32:51.885256Z[0m [32m INFO[0m [llama_full] 88/1024 ranks compressed
+[2m2026-05-13T01:32:52.240941Z[0m [32m INFO[0m [llama_full] 96/1024 ranks compressed
+[2m2026-05-13T01:32:52.879336Z[0m [32m INFO[0m [llama_full] 104/1024 ranks compressed
+[2m2026-05-13T01:32:53.603736Z[0m [32m INFO[0m [llama_full] 112/1024 ranks compressed
+[2m2026-05-13T01:32:54.131027Z[0m [32m INFO[0m [llama_full] 120/1024 ranks compressed
+[2m2026-05-13T01:32:54.797946Z[0m [32m INFO[0m [llama_full] 128/1024 ranks compressed
+[2m2026-05-13T01:32:55.254774Z[0m [32m INFO[0m [llama_full] 136/1024 ranks compressed
+[2m2026-05-13T01:32:55.711773Z[0m [32m INFO[0m [llama_full] 144/1024 ranks compressed
+[2m2026-05-13T01:32:56.358255Z[0m [32m INFO[0m [llama_full] 152/1024 ranks compressed
+[2m2026-05-13T01:32:57.379277Z[0m [32m INFO[0m [llama_full] 160/1024 ranks compressed
+[2m2026-05-13T01:32:57.749706Z[0m [32m INFO[0m [llama_full] 168/1024 ranks compressed
+[2m2026-05-13T01:32:58.202200Z[0m [32m INFO[0m [llama_full] 176/1024 ranks compressed
+[2m2026-05-13T01:32:58.594655Z[0m [32m INFO[0m [llama_full] 184/1024 ranks compressed
+[2m2026-05-13T01:32:59.613114Z[0m [32m INFO[0m [llama_full] 192/1024 ranks compressed
+[2m2026-05-13T01:33:00.104578Z[0m [32m INFO[0m [llama_full] 200/1024 ranks compressed
+[2m2026-05-13T01:33:00.464982Z[0m [32m INFO[0m [llama_full] 208/1024 ranks compressed
+[2m2026-05-13T01:33:00.930841Z[0m [32m INFO[0m [llama_full] 216/1024 ranks compressed
+[2m2026-05-13T01:33:01.868169Z[0m [32m INFO[0m [llama_full] 224/1024 ranks compressed
+[2m2026-05-13T01:33:02.512548Z[0m [32m INFO[0m [llama_full] 232/1024 ranks compressed
+[2m2026-05-13T01:33:02.879291Z[0m [32m INFO[0m [llama_full] 240/1024 ranks compressed
+[2m2026-05-13T01:33:03.360276Z[0m [32m INFO[0m [llama_full] 248/1024 ranks compressed
+[2m2026-05-13T01:33:03.942835Z[0m [32m INFO[0m [llama_full] 256/1024 ranks compressed
+[2m2026-05-13T01:33:04.823844Z[0m [32m INFO[0m [llama_full] 264/1024 ranks compressed
+[2m2026-05-13T01:33:05.532653Z[0m [32m INFO[0m [llama_full] 272/1024 ranks compressed
+[2m2026-05-13T01:33:05.881514Z[0m [32m INFO[0m [llama_full] 280/1024 ranks compressed
+[2m2026-05-13T01:33:06.203475Z[0m [32m INFO[0m [llama_full] 288/1024 ranks compressed
+[2m2026-05-13T01:33:06.985651Z[0m [32m INFO[0m [llama_full] 296/1024 ranks compressed
+[2m2026-05-13T01:33:07.894962Z[0m [32m INFO[0m [llama_full] 304/1024 ranks compressed
+[2m2026-05-13T01:33:08.338288Z[0m [32m INFO[0m [llama_full] 312/1024 ranks compressed
+[2m2026-05-13T01:33:08.621571Z[0m [32m INFO[0m [llama_full] 320/1024 ranks compressed
+[2m2026-05-13T01:33:09.620418Z[0m [32m INFO[0m [llama_full] 328/1024 ranks compressed
+[2m2026-05-13T01:33:10.236769Z[0m [32m INFO[0m [llama_full] 336/1024 ranks compressed
+[2m2026-05-13T01:33:10.689299Z[0m [32m INFO[0m [llama_full] 344/1024 ranks compressed
+[2m2026-05-13T01:33:11.108349Z[0m [32m INFO[0m [llama_full] 352/1024 ranks compressed
+[2m2026-05-13T01:33:11.820265Z[0m [32m INFO[0m [llama_full] 360/1024 ranks compressed
+[2m2026-05-13T01:33:12.592909Z[0m [32m INFO[0m [llama_full] 368/1024 ranks compressed
+[2m2026-05-13T01:33:13.021033Z[0m [32m INFO[0m [llama_full] 376/1024 ranks compressed
+[2m2026-05-13T01:33:13.586514Z[0m [32m INFO[0m [llama_full] 384/1024 ranks compressed
+[2m2026-05-13T01:33:14.242462Z[0m [32m INFO[0m [llama_full] 392/1024 ranks compressed
+[2m2026-05-13T01:33:14.884291Z[0m [32m INFO[0m [llama_full] 400/1024 ranks compressed
+[2m2026-05-13T01:33:15.563320Z[0m [32m INFO[0m [llama_full] 408/1024 ranks compressed
+[2m2026-05-13T01:33:16.147865Z[0m [32m INFO[0m [llama_full] 416/1024 ranks compressed
+[2m2026-05-13T01:33:16.671652Z[0m [32m INFO[0m [llama_full] 424/1024 ranks compressed
+[2m2026-05-13T01:33:17.366240Z[0m [32m INFO[0m [llama_full] 432/1024 ranks compressed
+[2m2026-05-13T01:33:18.036754Z[0m [32m INFO[0m [llama_full] 440/1024 ranks compressed
+[2m2026-05-13T01:33:18.528296Z[0m [32m INFO[0m [llama_full] 448/1024 ranks compressed
+[2m2026-05-13T01:33:19.105571Z[0m [32m INFO[0m [llama_full] 456/1024 ranks compressed
+[2m2026-05-13T01:33:19.512520Z[0m [32m INFO[0m [llama_full] 464/1024 ranks compressed
+[2m2026-05-13T01:33:20.314471Z[0m [32m INFO[0m [llama_full] 472/1024 ranks compressed
+[2m2026-05-13T01:33:21.009535Z[0m [32m INFO[0m [llama_full] 480/1024 ranks compressed
+[2m2026-05-13T01:33:21.532127Z[0m [32m INFO[0m [llama_full] 488/1024 ranks compressed
+[2m2026-05-13T01:33:22.228939Z[0m [32m INFO[0m [llama_full] 496/1024 ranks compressed
+[2m2026-05-13T01:33:22.951357Z[0m [32m INFO[0m [llama_full] 504/1024 ranks compressed
+[2m2026-05-13T01:33:23.716676Z[0m [32m INFO[0m [llama_full] 512/1024 ranks compressed
+[2m2026-05-13T01:33:24.183304Z[0m [32m INFO[0m [llama_full] 520/1024 ranks compressed
+[2m2026-05-13T01:33:25.079761Z[0m [32m INFO[0m [llama_full] 528/1024 ranks compressed
+[2m2026-05-13T01:33:25.954495Z[0m [32m INFO[0m [llama_full] 536/1024 ranks compressed
+[2m2026-05-13T01:33:26.427148Z[0m [32m INFO[0m [llama_full] 544/1024 ranks compressed
+[2m2026-05-13T01:33:27.029385Z[0m [32m INFO[0m [llama_full] 552/1024 ranks compressed
+[2m2026-05-13T01:33:27.987653Z[0m [32m INFO[0m [llama_full] 560/1024 ranks compressed
+[2m2026-05-13T01:33:28.623103Z[0m [32m INFO[0m [llama_full] 568/1024 ranks compressed
+[2m2026-05-13T01:33:29.485927Z[0m [32m INFO[0m [llama_full] 576/1024 ranks compressed
+[2m2026-05-13T01:33:29.908734Z[0m [32m INFO[0m [llama_full] 584/1024 ranks compressed
+[2m2026-05-13T01:33:30.763781Z[0m [32m INFO[0m [llama_full] 592/1024 ranks compressed
+[2m2026-05-13T01:33:31.834082Z[0m [32m INFO[0m [llama_full] 600/1024 ranks compressed
+[2m2026-05-13T01:33:32.662215Z[0m [32m INFO[0m [llama_full] 608/1024 ranks compressed
+[2m2026-05-13T01:33:33.421942Z[0m [32m INFO[0m [llama_full] 616/1024 ranks compressed
+[2m2026-05-13T01:33:34.284954Z[0m [32m INFO[0m [llama_full] 624/1024 ranks compressed
+[2m2026-05-13T01:33:34.894246Z[0m [32m INFO[0m [llama_full] 632/1024 ranks compressed
+[2m2026-05-13T01:33:35.682384Z[0m [32m INFO[0m [llama_full] 640/1024 ranks compressed
+[2m2026-05-13T01:33:36.617818Z[0m [32m INFO[0m [llama_full] 648/1024 ranks compressed
+[2m2026-05-13T01:33:37.145700Z[0m [32m INFO[0m [llama_full] 656/1024 ranks compressed
+[2m2026-05-13T01:33:38.484320Z[0m [32m INFO[0m [llama_full] 664/1024 ranks compressed
+[2m2026-05-13T01:33:39.099978Z[0m [32m INFO[0m [llama_full] 672/1024 ranks compressed
+[2m2026-05-13T01:33:39.570384Z[0m [32m INFO[0m [llama_full] 680/1024 ranks compressed
+[2m2026-05-13T01:33:39.903688Z[0m [32m INFO[0m [llama_full] 688/1024 ranks compressed
+[2m2026-05-13T01:33:41.168782Z[0m [32m INFO[0m [llama_full] 696/1024 ranks compressed
+[2m2026-05-13T01:33:41.924745Z[0m [32m INFO[0m [llama_full] 704/1024 ranks compressed
+[2m2026-05-13T01:33:42.672887Z[0m [32m INFO[0m [llama_full] 712/1024 ranks compressed
+[2m2026-05-13T01:33:43.237535Z[0m [32m INFO[0m [llama_full] 720/1024 ranks compressed
+[2m2026-05-13T01:33:44.085251Z[0m [32m INFO[0m [llama_full] 728/1024 ranks compressed
+[2m2026-05-13T01:33:44.788808Z[0m [32m INFO[0m [llama_full] 736/1024 ranks compressed
+[2m2026-05-13T01:33:45.309683Z[0m [32m INFO[0m [llama_full] 744/1024 ranks compressed
+[2m2026-05-13T01:33:46.181051Z[0m [32m INFO[0m [llama_full] 752/1024 ranks compressed
+[2m2026-05-13T01:33:46.624485Z[0m [32m INFO[0m [llama_full] 760/1024 ranks compressed
+[2m2026-05-13T01:33:47.327218Z[0m [32m INFO[0m [llama_full] 768/1024 ranks compressed
+[2m2026-05-13T01:33:47.762369Z[0m [32m INFO[0m [llama_full] 776/1024 ranks compressed
+[2m2026-05-13T01:33:48.740071Z[0m [32m INFO[0m [llama_full] 784/1024 ranks compressed
+[2m2026-05-13T01:33:49.221697Z[0m [32m INFO[0m [llama_full] 792/1024 ranks compressed
+[2m2026-05-13T01:33:49.865175Z[0m [32m INFO[0m [llama_full] 800/1024 ranks compressed
+[2m2026-05-13T01:33:50.464105Z[0m [32m INFO[0m [llama_full] 808/1024 ranks compressed
+[2m2026-05-13T01:33:51.303520Z[0m [32m INFO[0m [llama_full] 816/1024 ranks compressed
+[2m2026-05-13T01:33:51.945751Z[0m [32m INFO[0m [llama_full] 824/1024 ranks compressed
+[2m2026-05-13T01:33:52.508272Z[0m [32m INFO[0m [llama_full] 832/1024 ranks compressed
+[2m2026-05-13T01:33:52.976980Z[0m [32m INFO[0m [llama_full] 840/1024 ranks compressed
+[2m2026-05-13T01:33:53.849266Z[0m [32m INFO[0m [llama_full] 848/1024 ranks compressed
+[2m2026-05-13T01:33:54.586587Z[0m [32m INFO[0m [llama_full] 856/1024 ranks compressed
+[2m2026-05-13T01:33:55.198771Z[0m [32m INFO[0m [llama_full] 864/1024 ranks compressed
+[2m2026-05-13T01:33:55.739107Z[0m [32m INFO[0m [llama_full] 872/1024 ranks compressed
+[2m2026-05-13T01:33:56.366340Z[0m [32m INFO[0m [llama_full] 880/1024 ranks compressed
+[2m2026-05-13T01:33:57.249058Z[0m [32m INFO[0m [llama_full] 888/1024 ranks compressed
+[2m2026-05-13T01:33:57.865830Z[0m [32m INFO[0m [llama_full] 896/1024 ranks compressed
+[2m2026-05-13T01:33:58.453258Z[0m [32m INFO[0m [llama_full] 904/1024 ranks compressed
+[2m2026-05-13T01:33:58.972175Z[0m [32m INFO[0m [llama_full] 912/1024 ranks compressed
+[2m2026-05-13T01:33:59.860840Z[0m [32m INFO[0m [llama_full] 920/1024 ranks compressed
+[2m2026-05-13T01:34:00.445633Z[0m [32m INFO[0m [llama_full] 928/1024 ranks compressed
+[2m2026-05-13T01:34:01.047353Z[0m [32m INFO[0m [llama_full] 936/1024 ranks compressed
+[2m2026-05-13T01:34:01.514902Z[0m [32m INFO[0m [llama_full] 944/1024 ranks compressed
+[2m2026-05-13T01:34:02.054129Z[0m [32m INFO[0m [llama_full] 952/1024 ranks compressed
+[2m2026-05-13T01:34:03.182162Z[0m [32m INFO[0m [llama_full] 960/1024 ranks compressed
+[2m2026-05-13T01:34:03.514724Z[0m [32m INFO[0m [llama_full] 968/1024 ranks compressed
+[2m2026-05-13T01:34:04.249118Z[0m [32m INFO[0m [llama_full] 976/1024 ranks compressed
+[2m2026-05-13T01:34:04.665049Z[0m [32m INFO[0m [llama_full] 984/1024 ranks compressed
+[2m2026-05-13T01:34:05.759926Z[0m [32m INFO[0m [llama_full] 992/1024 ranks compressed
+[2m2026-05-13T01:34:06.113129Z[0m [32m INFO[0m [llama_full] 1000/1024 ranks compressed
+[2m2026-05-13T01:34:06.855851Z[0m [32m INFO[0m [llama_full] 1008/1024 ranks compressed
+[2m2026-05-13T01:34:07.191741Z[0m [32m INFO[0m [llama_full] 1016/1024 ranks compressed
+[2m2026-05-13T01:34:07.906462Z[0m [32m INFO[0m [llama_full] 1024/1024 ranks compressed
+[2m2026-05-13T01:41:28.101332Z[0m [32m INFO[0m [llama_full] padoc-parallel done: parallel=84.73s merge=147.61s serialize=292.38s total=524.72s ratio=29.43x
+| dataset | compressor | events | raw_bytes | compressed_bytes | ratio | compress_secs | mb/s |
+|---|---|---:|---:|---:|---:|---:|---:|
+| leworldmodel_full | padoc | 3469389 | 884.37 MiB | 37.04 MiB | 23.88 | 17.806 | 49.7 |
+| qwen3_full | padoc | 33813574 | 6.91 GiB | 269.51 MiB | 26.26 | 72.658 | 97.4 |
+| unifolm_full | padoc | 80223071 | 22.43 GiB | 726.30 MiB | 31.63 | 282.782 | 81.2 |
+| llama_full | padoc | 301288116 | 69.95 GiB | 2.38 GiB | 29.43 | 524.722 | 136.5 |

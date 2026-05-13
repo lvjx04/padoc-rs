@@ -1,0 +1,52 @@
+[2m2026-05-13T01:54:41.620837Z[0m [32m INFO[0m artifacts will be written under /mnt/treasure/ljx/padoc_artifacts/v3-numa-bind0
+[2m2026-05-13T01:54:41.624646Z[0m [32m INFO[0m [leworldmodel_full] padoc-parallel: 2 ranks, 32 workers
+[2m2026-05-13T01:54:47.957591Z[0m [32m INFO[0m [leworldmodel_full] 1/2 ranks compressed
+[2m2026-05-13T01:54:51.580857Z[0m [32m INFO[0m [leworldmodel_full] 2/2 ranks compressed
+[2m2026-05-13T01:54:56.531307Z[0m [32m INFO[0m [leworldmodel_full] saved padoc artifact -> /mnt/treasure/ljx/padoc_artifacts/v3-numa-bind0/leworldmodel_full.padoc.zst (39296079 bytes)
+[2m2026-05-13T01:54:56.531348Z[0m [32m INFO[0m [leworldmodel_full] padoc-parallel done: parallel=10.52s merge=1.66s serialize=2.73s total=14.91s ratio=23.60x
+[2m2026-05-13T01:54:56.835365Z[0m [32m INFO[0m [qwen3_full] padoc-parallel: 256 ranks, 32 workers
+[2m2026-05-13T01:54:57.755852Z[0m [32m INFO[0m [qwen3_full] 1/256 ranks compressed
+[2m2026-05-13T01:55:15.621123Z[0m [32m INFO[0m [qwen3_full] 8/256 ranks compressed
+[2m2026-05-13T01:55:16.796421Z[0m [32m INFO[0m [qwen3_full] 16/256 ranks compressed
+[2m2026-05-13T01:55:17.058878Z[0m [32m INFO[0m [qwen3_full] 24/256 ranks compressed
+[2m2026-05-13T01:55:17.484774Z[0m [32m INFO[0m [qwen3_full] 32/256 ranks compressed
+[2m2026-05-13T01:55:18.423455Z[0m [32m INFO[0m [qwen3_full] 40/256 ranks compressed
+[2m2026-05-13T01:55:19.824703Z[0m [32m INFO[0m [qwen3_full] 48/256 ranks compressed
+[2m2026-05-13T01:55:21.092620Z[0m [32m INFO[0m [qwen3_full] 56/256 ranks compressed
+[2m2026-05-13T01:55:21.533907Z[0m [32m INFO[0m [qwen3_full] 64/256 ranks compressed
+[2m2026-05-13T01:55:21.687179Z[0m [32m INFO[0m [qwen3_full] 72/256 ranks compressed
+[2m2026-05-13T01:55:21.902494Z[0m [32m INFO[0m [qwen3_full] 80/256 ranks compressed
+[2m2026-05-13T01:55:22.335411Z[0m [32m INFO[0m [qwen3_full] 88/256 ranks compressed
+[2m2026-05-13T01:55:23.140141Z[0m [32m INFO[0m [qwen3_full] 96/256 ranks compressed
+[2m2026-05-13T01:55:23.750654Z[0m [32m INFO[0m [qwen3_full] 104/256 ranks compressed
+[2m2026-05-13T01:55:23.966521Z[0m [32m INFO[0m [qwen3_full] 112/256 ranks compressed
+[2m2026-05-13T01:55:24.103525Z[0m [32m INFO[0m [qwen3_full] 120/256 ranks compressed
+[2m2026-05-13T01:55:24.735509Z[0m [32m INFO[0m [qwen3_full] 128/256 ranks compressed
+[2m2026-05-13T01:55:25.285886Z[0m [32m INFO[0m [qwen3_full] 136/256 ranks compressed
+[2m2026-05-13T01:55:25.631973Z[0m [32m INFO[0m [qwen3_full] 144/256 ranks compressed
+[2m2026-05-13T01:55:25.939578Z[0m [32m INFO[0m [qwen3_full] 152/256 ranks compressed
+[2m2026-05-13T01:55:26.378443Z[0m [32m INFO[0m [qwen3_full] 160/256 ranks compressed
+[2m2026-05-13T01:55:26.959261Z[0m [32m INFO[0m [qwen3_full] 168/256 ranks compressed
+[2m2026-05-13T01:55:27.435596Z[0m [32m INFO[0m [qwen3_full] 176/256 ranks compressed
+[2m2026-05-13T01:55:27.707093Z[0m [32m INFO[0m [qwen3_full] 184/256 ranks compressed
+[2m2026-05-13T01:55:28.071338Z[0m [32m INFO[0m [qwen3_full] 192/256 ranks compressed
+[2m2026-05-13T01:55:28.663186Z[0m [32m INFO[0m [qwen3_full] 200/256 ranks compressed
+[2m2026-05-13T01:55:29.144494Z[0m [32m INFO[0m [qwen3_full] 208/256 ranks compressed
+[2m2026-05-13T01:55:29.437767Z[0m [32m INFO[0m [qwen3_full] 216/256 ranks compressed
+[2m2026-05-13T01:55:29.835842Z[0m [32m INFO[0m [qwen3_full] 224/256 ranks compressed
+[2m2026-05-13T01:55:30.235432Z[0m [32m INFO[0m [qwen3_full] 232/256 ranks compressed
+[2m2026-05-13T01:55:30.567280Z[0m [32m INFO[0m [qwen3_full] 240/256 ranks compressed
+[2m2026-05-13T01:55:30.862910Z[0m [32m INFO[0m [qwen3_full] 248/256 ranks compressed
+[2m2026-05-13T01:55:31.002485Z[0m [32m INFO[0m [qwen3_full] 256/256 ranks compressed
+[2m2026-05-13T01:56:00.732585Z[0m [32m INFO[0m [qwen3_full] saved padoc artifact -> /mnt/treasure/ljx/padoc_artifacts/v3-numa-bind0/qwen3_full.padoc.zst (284906589 bytes)
+[2m2026-05-13T01:56:00.732619Z[0m [32m INFO[0m [qwen3_full] padoc-parallel done: parallel=34.21s merge=6.18s serialize=23.51s total=63.90s ratio=26.05x
+[2m2026-05-13T01:56:05.344480Z[0m [32m INFO[0m [unifolm_full] padoc-parallel: 4 ranks, 32 workers
+[2m2026-05-13T01:58:24.618358Z[0m [32m INFO[0m [unifolm_full] 1/4 ranks compressed
+[2m2026-05-13T01:58:30.128196Z[0m [32m INFO[0m [unifolm_full] 4/4 ranks compressed
+[2m2026-05-13T01:59:55.827842Z[0m [32m INFO[0m [unifolm_full] saved padoc artifact -> /mnt/treasure/ljx/padoc_artifacts/v3-numa-bind0/unifolm_full.padoc.zst (777559169 bytes)
+[2m2026-05-13T01:59:55.827876Z[0m [32m INFO[0m [unifolm_full] padoc-parallel done: parallel=154.03s merge=21.61s serialize=54.85s total=230.48s ratio=30.98x
+| dataset | compressor | events | raw_bytes | compressed_bytes | ratio | compress_secs | mb/s |
+|---|---|---:|---:|---:|---:|---:|---:|
+| leworldmodel_full | padoc | 3469389 | 884.37 MiB | 37.48 MiB | 23.60 | 14.907 | 59.3 |
+| qwen3_full | padoc | 33813574 | 6.91 GiB | 271.71 MiB | 26.05 | 63.897 | 110.8 |
+| unifolm_full | padoc | 80223071 | 22.43 GiB | 741.54 MiB | 30.98 | 230.483 | 99.7 |

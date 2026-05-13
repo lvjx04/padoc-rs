@@ -1,0 +1,110 @@
+bind [127.0.0.1]:6060: Address already in use
+channel_setup_fwd_listener_tcpip: cannot listen to port: 6060
+Could not request local forwarding.
+=== queue_sc4 starting at Wed May 13 09:57:10 AM CST 2026 ===
+=== v3 interleave bench finished at Wed May 13 10:07:58 AM CST 2026 ===
+total 3592662
+drwxr-xr-x 2 lvjiaxin lvjiaxin          6 May 13 10:03 .
+drwxr-xr-x 6 lvjiaxin lvjiaxin          6 May 13 09:54 ..
+-rw-r--r-- 1 lvjiaxin lvjiaxin   39296091 May 13 09:55 leworldmodel_full.padoc.zst
+-rw-r--r-- 1 lvjiaxin lvjiaxin 2574633758 May 13 10:07 llama_full.padoc.zst
+-rw-r--r-- 1 lvjiaxin lvjiaxin  284906736 May 13 09:56 qwen3_full.padoc.zst
+-rw-r--r-- 1 lvjiaxin lvjiaxin  777559175 May 13 10:00 unifolm_full.padoc.zst
+=== retry llama with numa-bind0 (256 GiB local) at Wed May 13 10:07:58 AM CST 2026 ===
+numactl: option '--localalloc' doesn't allow an argument
+usage: numactl [--all | -a] [--balancing | -b] [--interleave= | -i <nodes>]
+		[--preferred= | -p <node>] [--preferred-many= | -P <nodes>]
+               [--physcpubind= | -C <cpus>] [--cpunodebind= | -N <nodes>]
+               [--membind= | -m <nodes>] [--localalloc | -l] command args ...
+               [--localalloc | -l] command args ...
+       numactl [--show | -s]
+       numactl [--hardware | -H]
+       numactl [--length | -L <length>] [--offset | -o <offset>] [--shmmode | -M <shmmode>]
+               [--strict | -t]
+               [--shmid | -I <id>] --shm | -S <shmkeyfile>
+               [--shmid | -I <id>] --file | -f <tmpfsfile>
+               [--huge | -u] [--touch | -T] 
+               memory policy [--dump | -d] [--dump-nodes | -D]
+
+memory policy is --interleave | -i, --preferred | -p, --membind | -m, --localalloc | -l
+<nodes> is a comma delimited list of node numbers or A-B ranges or all.
+Instead of a number a node can also be:
+  netdev:DEV the node connected to network device DEV
+  file:PATH  the node the block device of path is connected to
+  ip:HOST    the node of the network device host routes through
+  block:PATH the node of block device path
+  pci:[seg:]bus:dev[:func] The node of a PCI device
+<cpus> is a comma delimited list of cpu numbers or A-B ranges or all
+all ranges can be inverted with !
+all numbers and ranges can be made cpuset-relative with +
+the old --cpubind argument is deprecated.
+use --cpunodebind or --physcpubind instead
+use --balancing | -b to enable Linux kernel NUMA balancing
+for the process if it is supported by kernel
+<length> can have g (GB), m (MB) or k (KB) suffixes
+=== llama per-rank roundtrip sample at Wed May 13 10:07:58 AM CST 2026 ===
+--- rank 0 ---
+load_secs          :    0.556
+compress_secs      :    0.930
+decompress_secs    :    0.372
+verify_secs        :    0.867
+compressed_bytes   : 2.94 MiB
+ratio              :    25.45x
+compress_throughput:     80.5 MB/s
+--- verify report ---
+original_events    : 316746
+reconstructed      : 316746
+matching           : 316746
+mismatched         : 0
+missing_streams    : 0
+extra_streams      : 0
+LOSSLESS           : YES
+--- rank 256 ---
+load_secs          :    0.520
+compress_secs      :    0.874
+decompress_secs    :    0.350
+verify_secs        :    0.808
+compressed_bytes   : 2.79 MiB
+ratio              :    25.02x
+compress_throughput:     79.9 MB/s
+--- verify report ---
+original_events    : 295116
+reconstructed      : 295116
+matching           : 295116
+mismatched         : 0
+missing_streams    : 0
+extra_streams      : 0
+LOSSLESS           : YES
+--- rank 512 ---
+load_secs          :    0.523
+compress_secs      :    0.874
+decompress_secs    :    0.341
+verify_secs        :    0.823
+compressed_bytes   : 2.77 MiB
+ratio              :    25.22x
+compress_throughput:     79.8 MB/s
+--- verify report ---
+original_events    : 295090
+reconstructed      : 295090
+matching           : 295090
+mismatched         : 0
+missing_streams    : 0
+extra_streams      : 0
+LOSSLESS           : YES
+--- rank 1023 ---
+load_secs          :    0.572
+compress_secs      :    0.963
+decompress_secs    :    0.375
+verify_secs        :    0.872
+compressed_bytes   : 3.11 MiB
+ratio              :    24.93x
+compress_throughput:     80.4 MB/s
+--- verify report ---
+original_events    : 322223
+reconstructed      : 322223
+matching           : 322223
+mismatched         : 0
+missing_streams    : 0
+extra_streams      : 0
+LOSSLESS           : YES
+=== queue_sc4 finished at Wed May 13 10:08:10 AM CST 2026 ===

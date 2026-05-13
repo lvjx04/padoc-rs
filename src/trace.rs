@@ -25,12 +25,6 @@ pub type StreamMap = IndexMap<i64, IndexMap<String, IndexMap<Phase, Vec<Event>>>
 /// [`CompressedTrace::to_bytes`] and [`CompressedTrace::write_to_path`].
 /// Capped at 16 to avoid wasting cores on tiny payloads where the
 /// per-thread overhead dominates.
-fn zstd_workers() -> u32 {
-    let n = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    n.min(16) as u32
-}
 
 /// Top-level container — one entry per rank.
 #[derive(Debug, Default)]
@@ -525,13 +519,39 @@ impl CompressedTrace {
     /// Streaming pipeline: msgpack chunks flow directly into a zstd
     /// encoder wrapped around a buffered file writer, so neither the raw
     /// msgpack output (~10 GiB on a 1024-rank profiler trace) nor the
-    /// compressed blob (~2.4 GiB) is ever fully buffered in memory.  zstd
-    /// runs multi-threaded to keep up with msgpack throughput.
+    /// compressed blob (~2.4 GiB) is ever fully buffered in memory.
+    ///
+    /// Single-threaded zstd by design — see [`Self::to_bytes`] for the
+    /// rationale.  Use [`Self::write_to_path_mt`] when you have a multi-GB
+    /// payload and have measured the multithread overhead to be worthwhile.
     pub fn write_to_path(&self, path: impl AsRef<Path>, zstd_level: i32) -> Result<()> {
+        self.write_to_path_inner(path, zstd_level, 0)
+    }
+
+    /// Like [`Self::write_to_path`] but with multi-threaded zstd.
+    /// `n_workers = 0` disables threading; non-zero spins up that many
+    /// zstd worker threads on top of the encoder.
+    pub fn write_to_path_mt(
+        &self,
+        path: impl AsRef<Path>,
+        zstd_level: i32,
+        n_workers: u32,
+    ) -> Result<()> {
+        self.write_to_path_inner(path, zstd_level, n_workers)
+    }
+
+    fn write_to_path_inner(
+        &self,
+        path: impl AsRef<Path>,
+        zstd_level: i32,
+        n_workers: u32,
+    ) -> Result<()> {
         let path = path.as_ref();
         let file = std::io::BufWriter::with_capacity(8 * 1024 * 1024, std::fs::File::create(path)?);
         let mut encoder = zstd::stream::Encoder::new(file, zstd_level)?;
-        let _ = encoder.multithread(zstd_workers());
+        if n_workers > 0 {
+            let _ = encoder.multithread(n_workers);
+        }
         rmp_serde::encode::write_named(&mut encoder, self)?;
         let mut writer = encoder.finish()?;
         use std::io::Write;
@@ -547,13 +567,18 @@ impl CompressedTrace {
 
     /// Encode to a self-contained byte blob (zstd-wrapped msgpack).
     ///
-    /// Streams msgpack output straight into a multi-threaded zstd encoder
+    /// Streams msgpack output straight into a single-threaded zstd encoder
     /// — the full uncompressed msgpack payload is never materialised, only
     /// the final compressed buffer.
+    ///
+    /// We tried `encoder.multithread(N)` here and it regressed serialize time
+    /// 2-4× on every dataset we measured (lewm, qwen3, unifolm) because the
+    /// per-job coordination cost of zstdmt outweighed any parallelism gain
+    /// at our chunk sizes (~MiB-scale msgpack writes from rmp_serde).  Keep
+    /// it single-threaded; multi-threading is opt-in via [`write_to_path_mt`].
     pub fn to_bytes(&self, zstd_level: i32) -> Result<Vec<u8>> {
         let out: Vec<u8> = Vec::with_capacity(8 * 1024 * 1024);
         let mut encoder = zstd::stream::Encoder::new(out, zstd_level)?;
-        let _ = encoder.multithread(zstd_workers());
         rmp_serde::encode::write_named(&mut encoder, self)?;
         Ok(encoder.finish()?)
     }

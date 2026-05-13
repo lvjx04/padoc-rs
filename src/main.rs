@@ -106,6 +106,14 @@ enum BenchCmd {
         /// zstd level used when serialising the merged compressed trace.
         #[arg(long, default_value_t = 3)]
         zstd_level: i32,
+        /// If set, write each `<dataset>.<compressor>` artifact to this
+        /// directory (created if missing).  Filenames:
+        ///   `<name>.padoc.zst`           — padoc / merged padoc parallel
+        ///   `<name>.<compressor>.bin`    — every other baseline (raw, gzip,
+        ///                                  scalatrace, tracezip, …).
+        /// Skipping this argument keeps the historic in-memory-only behaviour.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
     },
     /// Analysis matrix.
     Analyze {
@@ -141,7 +149,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Analyze { trace, task, in_situ } => cmd_analyze(&trace, &task, in_situ),
         Cmd::List => cmd_list(),
         Cmd::Bench { sub } => match sub {
-            BenchCmd::Compress { datasets, manifest, compressors, per_rank, workers, zstd_level } => {
+            BenchCmd::Compress { datasets, manifest, compressors, per_rank, workers, zstd_level, out_dir } => {
                 cmd_bench_compress(
                     &datasets,
                     manifest.as_deref(),
@@ -149,6 +157,7 @@ fn main() -> anyhow::Result<()> {
                     per_rank,
                     workers,
                     zstd_level,
+                    out_dir.as_deref(),
                 )
             }
             BenchCmd::Analyze { datasets } => cmd_bench_analyze(&datasets),
@@ -342,6 +351,7 @@ fn cmd_bench_compress(
     per_rank: bool,
     workers: usize,
     zstd_level: i32,
+    out_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let all = baselines::registry();
     let compressors: Vec<Box<dyn BaselineCompressor>> = match filter {
@@ -378,11 +388,17 @@ fn cmd_bench_compress(
     let only_padoc =
         compressors.len() == 1 && compressors.iter().any(|c| c.name() == "padoc");
 
+    if let Some(d) = out_dir {
+        std::fs::create_dir_all(d)
+            .with_context(|| format!("create_dir_all({})", d.display()))?;
+        tracing::info!("artifacts will be written under {}", d.display());
+    }
+
     let records = if workers > 1 && only_padoc {
         let cfg = CompressorConfig::default();
-        bench::run_padoc_parallel(&cfg, &streaming, workers, zstd_level)?
+        bench::run_padoc_parallel(&cfg, &streaming, workers, zstd_level, out_dir)?
     } else if per_rank {
-        bench::run_compression_streaming(&compressors, &streaming)?
+        bench::run_compression_streaming(&compressors, &streaming, out_dir)?
     } else {
         let refs: Vec<bench::runner::DatasetRef> = streaming
             .iter()
@@ -392,7 +408,7 @@ fn cmd_bench_compress(
                 is_dir: d.is_dir,
             })
             .collect();
-        bench::run_compression_matrix(&compressors, &refs)?
+        bench::run_compression_matrix(&compressors, &refs, out_dir)?
     };
     print!("{}", bench::render_compression_table(&records));
     Ok(())

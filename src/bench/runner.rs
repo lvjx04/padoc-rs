@@ -19,6 +19,7 @@ pub struct DatasetRef<'a> {
 pub fn run_compression_matrix(
     compressors: &[Box<dyn BaselineCompressor>],
     datasets: &[DatasetRef<'_>],
+    out_dir: Option<&Path>,
 ) -> Result<Vec<CompressionRecord>> {
     let mut out = Vec::new();
     for ds in datasets {
@@ -40,6 +41,17 @@ pub fn run_compression_matrix(
             } else {
                 0.0
             };
+            if let Some(d) = out_dir {
+                let path = artifact_path(d, &ds.name, c.name());
+                std::fs::write(&path, &artifact.bytes)?;
+                tracing::info!(
+                    "[{}] saved {} artifact -> {} ({} bytes)",
+                    ds.name,
+                    c.name(),
+                    path.display(),
+                    compressed_bytes
+                );
+            }
             out.push(CompressionRecord {
                 compressor: c.name().to_string(),
                 dataset: ds.name.to_string(),
@@ -54,6 +66,13 @@ pub fn run_compression_matrix(
         }
     }
     Ok(out)
+}
+
+/// `<dir>/<dataset>.<compressor>.bin` for non-padoc compressors,
+/// `<dir>/<dataset>.padoc.zst` for padoc.
+fn artifact_path(dir: &Path, dataset: &str, compressor: &str) -> PathBuf {
+    let ext = if compressor == "padoc" { "zst" } else { "bin" };
+    dir.join(format!("{dataset}.{compressor}.{ext}"))
 }
 
 pub fn run_analysis_matrix(
@@ -124,6 +143,7 @@ pub fn run_analysis_matrix(
 pub fn run_compression_streaming(
     compressors: &[Box<dyn BaselineCompressor>],
     datasets: &[StreamingDataset],
+    out_dir: Option<&Path>,
 ) -> Result<Vec<CompressionRecord>> {
     let mut out = Vec::new();
     for ds in datasets {
@@ -143,18 +163,30 @@ pub fn run_compression_streaming(
             .iter()
             .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
             .sum();
+        let ds_out = out_dir.map(|d| d.join(&ds.name));
+        if let Some(d) = &ds_out {
+            std::fs::create_dir_all(d)?;
+        }
 
         for (i, file) in files.iter().enumerate() {
             let load_start = Instant::now();
             let trace = Trace::from_file(file)?;
             let load_secs = load_start.elapsed().as_secs_f64();
             let events = trace.event_count();
+            let stem = file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("rank");
             for (ci, c) in compressors.iter().enumerate() {
                 let artifact = c.compress(&trace)?;
                 acc[ci].event_count += events;
                 acc[ci].compressed_bytes += artifact.bytes.len() as u64;
                 acc[ci].compress_secs += artifact.compress_secs;
                 acc[ci].decompress_secs += artifact.decompress_secs.unwrap_or(0.0);
+                if let Some(d) = &ds_out {
+                    let path = artifact_path(d, stem, c.name());
+                    std::fs::write(&path, &artifact.bytes)?;
+                }
             }
             // Every 8 ranks (or on first/last), surface progress.
             if i == 0 || (i + 1) % 8 == 0 || i + 1 == total_ranks {
@@ -227,6 +259,7 @@ pub fn run_padoc_parallel(
     datasets: &[StreamingDataset],
     workers: usize,
     zstd_level: i32,
+    out_dir: Option<&Path>,
 ) -> Result<Vec<CompressionRecord>> {
     use rayon::prelude::*;
 
@@ -298,9 +331,25 @@ pub fn run_padoc_parallel(
         let merge_secs = merge_start.elapsed().as_secs_f64();
 
         let serialize_start = Instant::now();
-        let bytes = compressed.to_bytes(zstd_level)?;
+        // When out_dir is set, stream straight into the file (skips a giant
+        // intermediate Vec<u8>); otherwise build the in-memory blob so the
+        // record's compressed_bytes is meaningful.
+        let compressed_bytes = if let Some(d) = out_dir {
+            let path = artifact_path(d, &ds.name, "padoc");
+            compressed.write_to_path(&path, zstd_level)?;
+            let n = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            tracing::info!(
+                "[{}] saved padoc artifact -> {} ({} bytes)",
+                ds.name,
+                path.display(),
+                n
+            );
+            n
+        } else {
+            let bytes = compressed.to_bytes(zstd_level)?;
+            bytes.len() as u64
+        };
         let serialize_secs = serialize_start.elapsed().as_secs_f64();
-        let compressed_bytes = bytes.len() as u64;
 
         let total_secs = parallel_secs + merge_secs + serialize_secs;
         let ratio = if compressed_bytes == 0 {

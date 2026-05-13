@@ -1,0 +1,16 @@
+raw_json	stream_load_balance	51.4521	1084.2908	0.4158	1136.1587	891576
+raw_json	operator_hotspot	51.4521	1084.2908	302.3282	1438.0711	891576
+raw_json	rank_load_balance	51.4521	1084.2908	19.4036	1155.1465	891576
+raw_json	layer_operator_balance	51.4521	1084.2908	54.6702	1190.4131	891576
+gzip_json	stream_load_balance	3.3070	1328.1335	0.4066	1331.8471	898716
+gzip_json	operator_hotspot	3.3070	1328.1335	110.5463	1441.9868	898716
+gzip_json	rank_load_balance	3.3070	1328.1335	19.3022	1350.7427	898716
+gzip_json	layer_operator_balance	3.3070	1328.1335	53.3048	1384.7453	898716
+scalatrace	stream_load_balance	2.2774	317.5280	0.3632	320.1686	259560
+scalatrace	operator_hotspot	2.2774	317.5280	107.9691	427.7745	259560
+scalatrace	rank_load_balance	2.2774	317.5280	20.3954	340.2008	259560
+scalatrace	layer_operator_balance	2.2774	317.5280	51.8395	371.6449	259560
+tracezip	stream_load_balance	2.5167	368.4867	0.3470	371.3504	263952
+tracezip	operator_hotspot	2.5167	368.4867	106.6924	477.6958	263952
+tracezip	rank_load_balance	2.5167	368.4867	21.6288	392.6322	263952
+tracezip	layer_operator_balance	2.5167	368.4867	55.3538	426.3572	263952

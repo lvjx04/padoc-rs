@@ -1,0 +1,27 @@
+loading /mnt/treasure/ljx/artifacts_v6/llama_full.padoc.zst
+on_disk_bytes	2573666097
+templates	312
+cpu_templates	214
+gpu_templates	98
+cpu_instances	271043072
+gpu_instances	30245044
+nodes	67780289
+node_breakdown	root=2067212 cpu=20791394 same_cpu=22923564 gpu=6144 kernel_launch=18773030 kernels_launch=3218945
+num_column_breakdown	constant=4 i32=716 i64=0
+cpu_ts_bytes	1617974572	1.507 GiB
+cpu_dur_bytes	1047549204	0.976 GiB
+cpu_id_bytes	570425344	0.531 GiB
+gpu_ts_bytes	171115712	0.159 GiB
+gpu_dur_bytes	171115712	0.159 GiB
+gpu_pid_bytes	171115712	0.159 GiB
+gpu_ph_bytes	490	0.000 GiB
+gpu_stream_bytes	468040289	0.436 GiB
+name_num_vecs_bytes	2502784904	2.331 GiB
+name_num_payload_bytes	1063	0.000 GiB
+node_vec_storage_bytes	11965270824	11.144 GiB
+node_u32_vec_storage_bytes	1138670880	1.060 GiB
+arg_value_count	567742850
+arg_vec_storage_bytes	3808381824	3.547 GiB
+arg_payload_bytes	100453388	0.094 GiB
+string_payload_other_bytes	63100	0.000 GiB
+accounted_selected_total_bytes	23732963018	22.103 GiB

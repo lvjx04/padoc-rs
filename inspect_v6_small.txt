@@ -1,0 +1,78 @@
+=== leworldmodel_full ===
+templates	4094
+cpu_templates	4021
+gpu_templates	73
+cpu_instances	3438954
+gpu_instances	30435
+nodes	1783991
+node_breakdown	root=33183 cpu=1205628 same_cpu=538581 gpu=12 kernel_launch=5894 kernels_launch=693
+num_column_breakdown	constant=1748 i32=6511 i64=0
+cpu_ts_bytes	14159504	0.013 GiB
+cpu_dur_bytes	13560932	0.013 GiB
+cpu_id_bytes	218544	0.000 GiB
+gpu_ts_bytes	121740	0.000 GiB
+gpu_dur_bytes	121672	0.000 GiB
+gpu_pid_bytes	121728	0.000 GiB
+gpu_ph_bytes	365	0.000 GiB
+gpu_stream_bytes	175776	0.000 GiB
+name_num_vecs_bytes	1891996	0.002 GiB
+name_num_payload_bytes	14512	0.000 GiB
+node_vec_storage_bytes	210585576	0.196 GiB
+node_u32_vec_storage_bytes	9135660	0.009 GiB
+arg_value_count	10324129
+arg_vec_storage_bytes	48544532	0.045 GiB
+arg_payload_bytes	5501763	0.005 GiB
+string_payload_other_bytes	393242	0.000 GiB
+accounted_selected_total_bytes	304547542	0.284 GiB
+=== qwen3_full ===
+templates	5498
+cpu_templates	5414
+gpu_templates	84
+cpu_instances	30961798
+gpu_instances	2851776
+nodes	11248516
+node_breakdown	root=312399 cpu=5208093 same_cpu=3808018 gpu=512 kernel_launch=1461196 kernels_launch=458298
+num_column_breakdown	constant=4880 i32=6194 i64=0
+cpu_ts_bytes	151223204	0.141 GiB
+cpu_dur_bytes	113474464	0.106 GiB
+cpu_id_bytes	0	0.000 GiB
+gpu_ts_bytes	11900360	0.011 GiB
+gpu_dur_bytes	11900360	0.011 GiB
+gpu_pid_bytes	11899872	0.011 GiB
+gpu_ph_bytes	420	0.000 GiB
+gpu_stream_bytes	47137632	0.044 GiB
+name_num_vecs_bytes	27203016	0.025 GiB
+name_num_payload_bytes	274548	0.000 GiB
+node_vec_storage_bytes	1607469928	1.497 GiB
+node_u32_vec_storage_bytes	119701780	0.111 GiB
+arg_value_count	52536565
+arg_vec_storage_bytes	451094036	0.420 GiB
+arg_payload_bytes	157549679	0.147 GiB
+string_payload_other_bytes	324433	0.000 GiB
+accounted_selected_total_bytes	2711153732	2.525 GiB
+=== unifolm_full ===
+templates	16897
+cpu_templates	16633
+gpu_templates	264
+cpu_instances	71993430
+gpu_instances	8229641
+nodes	20335297
+node_breakdown	root=459954 cpu=12205564 same_cpu=7429638 gpu=872 kernel_launch=83054 kernels_launch=156215
+num_column_breakdown	constant=5147 i32=28909 i64=0
+cpu_ts_bytes	377116980	0.351 GiB
+cpu_dur_bytes	305253024	0.284 GiB
+cpu_id_bytes	71303168	0.066 GiB
+gpu_ts_bytes	38867488	0.036 GiB
+gpu_dur_bytes	38677460	0.036 GiB
+gpu_pid_bytes	38867488	0.036 GiB
+gpu_ph_bytes	1320	0.000 GiB
+gpu_stream_bytes	331180485	0.308 GiB
+name_num_vecs_bytes	65649616	0.061 GiB
+name_num_payload_bytes	54800	0.000 GiB
+node_vec_storage_bytes	3375081336	3.143 GiB
+node_u32_vec_storage_bytes	316241096	0.295 GiB
+arg_value_count	246060531
+arg_vec_storage_bytes	1931088124	1.798 GiB
+arg_payload_bytes	327554009	0.305 GiB
+string_payload_other_bytes	1655708	0.002 GiB
+accounted_selected_total_bytes	7218592102	6.723 GiB

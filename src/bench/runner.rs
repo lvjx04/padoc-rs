@@ -261,6 +261,17 @@ pub fn run_padoc_parallel(
     zstd_level: i32,
     out_dir: Option<&Path>,
 ) -> Result<Vec<CompressionRecord>> {
+    run_padoc_parallel_with_name(config, "padoc", datasets, workers, zstd_level, out_dir)
+}
+
+fn run_padoc_parallel_with_name(
+    config: &CompressorConfig,
+    compressor_name: &str,
+    datasets: &[StreamingDataset],
+    workers: usize,
+    zstd_level: i32,
+    out_dir: Option<&Path>,
+) -> Result<Vec<CompressionRecord>> {
     use rayon::prelude::*;
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -335,7 +346,7 @@ pub fn run_padoc_parallel(
         // intermediate Vec<u8>); otherwise build the in-memory blob so the
         // record's compressed_bytes is meaningful.
         let compressed_bytes = if let Some(d) = out_dir {
-            let path = artifact_path(d, &ds.name, "padoc");
+            let path = d.join(format!("{}.{}.zst", ds.name, compressor_name));
             compressed.write_to_path(&path, zstd_level)?;
             let n = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             tracing::info!(
@@ -373,7 +384,7 @@ pub fn run_padoc_parallel(
         );
 
         out.push(CompressionRecord {
-            compressor: "padoc".to_string(),
+            compressor: compressor_name.to_string(),
             dataset: ds.name.clone(),
             event_count,
             raw_bytes: total_raw_bytes,
@@ -386,6 +397,103 @@ pub fn run_padoc_parallel(
     }
 
     Ok(out)
+}
+
+/// Sequential PADOC compression for one or more explicit configs.  This is
+/// primarily for ablation rows on datasets that fit in memory.
+pub fn run_padoc_config_matrix(
+    configs: &[CompressorConfig],
+    datasets: &[StreamingDataset],
+    zstd_level: i32,
+    out_dir: Option<&Path>,
+) -> Result<Vec<CompressionRecord>> {
+    let mut out = Vec::new();
+    for ds in datasets {
+        let trace = if ds.is_dir {
+            Trace::from_dir(&ds.path)?
+        } else {
+            Trace::from_file(&ds.path)?
+        };
+        let raw_bytes = if ds.is_dir {
+            dir_size_bytes(&ds.path)
+        } else {
+            std::fs::metadata(&ds.path).map(|m| m.len()).unwrap_or(0)
+        };
+        let event_count = trace.event_count();
+
+        for config in configs {
+            let start = Instant::now();
+            let mut compressor = TemplateCompressor::with_config(config.clone());
+            let compressed = compressor.compress(&trace)?;
+            let compressed_bytes = if let Some(d) = out_dir {
+                let path = padoc_config_artifact_path(d, &ds.name, config);
+                compressed.write_to_path(&path, zstd_level)?;
+                std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+            } else {
+                compressed.to_bytes(zstd_level)?.len() as u64
+            };
+            let secs = start.elapsed().as_secs_f64();
+            let ratio = if compressed_bytes == 0 {
+                0.0
+            } else {
+                raw_bytes as f64 / compressed_bytes as f64
+            };
+            let throughput = if secs > 0.0 {
+                raw_bytes as f64 / 1024.0 / 1024.0 / secs
+            } else {
+                0.0
+            };
+            out.push(CompressionRecord {
+                compressor: padoc_config_name(config),
+                dataset: ds.name.clone(),
+                event_count,
+                raw_bytes,
+                compressed_bytes,
+                compress_secs: secs,
+                decompress_secs: None,
+                ratio,
+                throughput_mb_per_sec: throughput,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Parallel PADOC compression for one or more explicit configs.  Used for
+/// large ablation rows where loading all ranks into one `Trace` is not viable.
+pub fn run_padoc_parallel_config_matrix(
+    configs: &[CompressorConfig],
+    datasets: &[StreamingDataset],
+    workers: usize,
+    zstd_level: i32,
+    out_dir: Option<&Path>,
+) -> Result<Vec<CompressionRecord>> {
+    let mut out = Vec::new();
+    for config in configs {
+        let records = run_padoc_parallel_with_name(
+            config,
+            &padoc_config_name(config),
+            datasets,
+            workers,
+            zstd_level,
+            out_dir,
+        )?;
+        out.extend(records);
+    }
+    Ok(out)
+}
+
+fn padoc_config_name(config: &CompressorConfig) -> String {
+    if config.label == "default" {
+        "padoc".to_string()
+    } else {
+        format!("padoc_{}", config.label)
+    }
+}
+
+fn padoc_config_artifact_path(dir: &Path, dataset: &str, config: &CompressorConfig) -> PathBuf {
+    let name = padoc_config_name(config);
+    dir.join(format!("{dataset}.{name}.zst"))
 }
 
 fn count_events_in_shard(shard: &RankShard) -> usize {

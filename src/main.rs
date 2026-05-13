@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use padoc::analysis;
 use padoc::baselines::{self, BaselineCompressor};
 use padoc::bench;
-use padoc::compressor::{CompressorConfig, TemplateCompressor};
+use padoc::compressor::{all_ablation_presets, CompressorConfig, TemplateCompressor};
 use padoc::synthetic::SyntheticTraceSpec;
 use padoc::trace::Trace;
 use padoc::utils;
@@ -93,6 +93,10 @@ enum BenchCmd {
         manifest: Option<PathBuf>,
         #[arg(long, value_delimiter = ',')]
         compressors: Option<Vec<String>>,
+        /// PADOC config labels to run instead of the normal compressor
+        /// registry path.  Use `all` for every ablation preset.
+        #[arg(long, value_delimiter = ',')]
+        padoc_presets: Option<Vec<String>>,
         /// Process each rank file independently (lower RAM, no cross-rank
         /// template sharing).
         #[arg(long, default_value_t = false)]
@@ -222,11 +226,12 @@ fn main() -> anyhow::Result<()> {
         Cmd::Analyze { trace, task, in_situ } => cmd_analyze(&trace, &task, in_situ),
         Cmd::List => cmd_list(),
         Cmd::Bench { sub } => match sub {
-            BenchCmd::Compress { datasets, manifest, compressors, per_rank, workers, zstd_level, out_dir } => {
+            BenchCmd::Compress { datasets, manifest, compressors, padoc_presets, per_rank, workers, zstd_level, out_dir } => {
                 cmd_bench_compress(
                     &datasets,
                     manifest.as_deref(),
                     compressors.as_deref(),
+                    padoc_presets.as_deref(),
                     per_rank,
                     workers,
                     zstd_level,
@@ -427,17 +432,12 @@ fn cmd_bench_compress(
     datasets: &[PathBuf],
     manifest: Option<&Path>,
     filter: Option<&[String]>,
+    padoc_presets: Option<&[String]>,
     per_rank: bool,
     workers: usize,
     zstd_level: i32,
     out_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let all = baselines::registry();
-    let compressors: Vec<Box<dyn BaselineCompressor>> = match filter {
-        Some(names) => all.into_iter().filter(|c| names.iter().any(|n| n == c.name())).collect(),
-        None => all,
-    };
-
     // Build the working set from CLI `--datasets` and/or `--manifest`.
     let mut streaming: Vec<bench::StreamingDataset> = Vec::new();
     for p in datasets {
@@ -464,14 +464,36 @@ fn cmd_bench_compress(
         anyhow::bail!("no datasets — pass --datasets or --manifest");
     }
 
-    let only_padoc =
-        compressors.len() == 1 && compressors.iter().any(|c| c.name() == "padoc");
-
     if let Some(d) = out_dir {
         std::fs::create_dir_all(d)
             .with_context(|| format!("create_dir_all({})", d.display()))?;
         tracing::info!("artifacts will be written under {}", d.display());
     }
+
+    if let Some(labels) = padoc_presets {
+        if filter.is_some() {
+            anyhow::bail!("--padoc-presets is mutually exclusive with --compressors");
+        }
+        let configs = resolve_padoc_presets(labels)?;
+        let has_dir = streaming.iter().any(|d| d.is_dir);
+        let records = if has_dir || workers > 1 {
+            bench::run_padoc_parallel_config_matrix(&configs, &streaming, workers, zstd_level, out_dir)?
+        } else if per_rank {
+            anyhow::bail!("--padoc-presets does not support --per-rank; use --workers N for large directories");
+        } else {
+            bench::run_padoc_config_matrix(&configs, &streaming, zstd_level, out_dir)?
+        };
+        print!("{}", bench::render_compression_table(&records));
+        return Ok(());
+    }
+
+    let all = baselines::registry();
+    let compressors: Vec<Box<dyn BaselineCompressor>> = match filter {
+        Some(names) => all.into_iter().filter(|c| names.iter().any(|n| n == c.name())).collect(),
+        None => all,
+    };
+    let only_padoc =
+        compressors.len() == 1 && compressors.iter().any(|c| c.name() == "padoc");
 
     let records = if workers > 1 && only_padoc {
         let cfg = CompressorConfig::default();
@@ -491,6 +513,24 @@ fn cmd_bench_compress(
     };
     print!("{}", bench::render_compression_table(&records));
     Ok(())
+}
+
+fn resolve_padoc_presets(labels: &[String]) -> anyhow::Result<Vec<CompressorConfig>> {
+    let presets = all_ablation_presets();
+    let expanded: Vec<String> = if labels.iter().any(|x| x == "all") {
+        presets.keys().cloned().collect()
+    } else {
+        labels.to_vec()
+    };
+    let mut configs = Vec::new();
+    for label in expanded {
+        let cfg = presets
+            .get(&label)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown PADOC preset `{label}`"))?;
+        configs.push(cfg);
+    }
+    Ok(configs)
 }
 
 fn cmd_bench_analyze(datasets: &[PathBuf]) -> anyhow::Result<()> {
@@ -822,4 +862,3 @@ fn load_trace(path: &Path) -> anyhow::Result<Trace> {
         Trace::from_file(path)?
     })
 }
-

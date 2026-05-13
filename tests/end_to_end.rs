@@ -1,6 +1,6 @@
 //! End-to-end pipeline tests: synthetic trace -> compress -> serialise -> deserialise -> analyse.
 
-use padoc::analysis::{AnalysisTask, OperatorHotspot, StreamLoadBalance};
+use padoc::analysis::{AnalysisTask, ComputeCommOverlap, OperatorHotspot, StreamLoadBalance};
 use padoc::baselines::{BaselineCompressor, GzipMsgpackCompressor, PadocCompressor, RawJsonCompressor, ScalaTraceCompressor, TraceZipCompressor};
 use padoc::compressor::{all_ablation_presets, CompressorConfig, TemplateCompressor};
 use padoc::storage_breakdown::{measure_on_disk_regions, measure_storage};
@@ -83,6 +83,23 @@ fn padoc_in_situ_stream_load_balance_runs() {
     let result = task.run_in_situ(&compressed).expect("in-situ");
     let arr = result.as_array().expect("array");
     assert!(!arr.is_empty(), "stream load balance produced no entries");
+}
+
+#[test]
+fn padoc_in_situ_compute_comm_overlap_matches_raw_totals() {
+    let trace = generate_trace(&small_spec());
+    let task = ComputeCommOverlap;
+    let raw = task.run_raw(&trace).expect("raw");
+
+    let mut compressor = TemplateCompressor::new();
+    let compressed = compressor.compress(&trace).expect("compress");
+    let in_situ = task.run_in_situ(&compressed).expect("in-situ");
+
+    assert_eq!(raw.as_array().unwrap().len(), in_situ.as_array().unwrap().len());
+    let raw_first = raw.as_array().unwrap().first().unwrap();
+    let situ_first = in_situ.as_array().unwrap().first().unwrap();
+    assert_eq!(raw_first["compute_total_us"], situ_first["compute_total_us"]);
+    assert_eq!(raw_first["comm_total_us"], situ_first["comm_total_us"]);
 }
 
 #[test]

@@ -30,6 +30,7 @@ use ahash::AHashMap;
 use serde_json::Value;
 
 use crate::analysis::AnalysisTask;
+use crate::analysis::kernel_class::is_nccl_kernel;
 use crate::event::Template;
 use crate::node::{InstanceId, Node, TemplateId};
 use crate::trace::{CompressedTrace, Trace};
@@ -94,17 +95,6 @@ impl AnalysisTask for ParallelGroup {
         }
         Ok(load_balance_json(&compute, &comm))
     }
-}
-
-/// True iff `name` looks like an NCCL device kernel.  Matches the names
-/// commonly emitted by NCCL itself (`ncclKernel_*`,
-/// `ncclDevKernel_*`) and BiRen's `legacy::genericMultiShmOp` /
-/// `genericIxcclLastStepOp` allreduce dispatcher.
-fn is_nccl_kernel(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.contains("ncclkernel") || lower.contains("nccldevkernel")
-        || lower.contains("genericmultishmop") || lower.contains("genericixccl")
-        || lower.contains("ncclredopkernel")
 }
 
 /// Walk a `Node` tree, calling `f(template_id, instance_id)` for every

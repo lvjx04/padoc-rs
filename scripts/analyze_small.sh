@@ -6,7 +6,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 ART=${1:-/mnt/treasure/ljx/artifacts}
 OUT="$ROOT/results/main/analyze_small.tsv"
 PADOC="$ROOT/target/release/padoc"
-TASKS=operator_hotspot,stream_load_balance,layer_operator_balance,rank_load_balance
+TASKS=operator_hotspot,stream_load_balance,compute_comm_overlap,layer_operator_balance,rank_load_balance
 > "$OUT"
 for ds in leworldmodel_full qwen3_full unifolm_full; do
   for c in padoc raw_json gzip_json scalatrace tracezip; do

@@ -10,7 +10,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 ART=${1:-/mnt/treasure/ljx/artifacts}
 PAR=${2:-48}
 PADOC="$ROOT/target/release/padoc"
-TASKS=operator_hotspot,stream_load_balance,layer_operator_balance,rank_load_balance
+TASKS=operator_hotspot,stream_load_balance,compute_comm_overlap,layer_operator_balance,rank_load_balance
 
 # --- PADOC: single process, in-situ on merged artifact ---
 PADOC_OUT="$ROOT/results/main/analyze_llama_padoc.tsv"

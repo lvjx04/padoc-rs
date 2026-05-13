@@ -14,7 +14,7 @@ ART=${1:-/mnt/treasure/ljx/artifacts_ablation}
 RES=${2:-"$ROOT/results/remaining"}
 MANIFEST=${3:-"$ROOT/scripts/manifest_small.json"}
 WORKERS=${WORKERS:-32}
-TASKS=${TASKS:-operator_hotspot,stream_load_balance,layer_operator_balance,rank_load_balance}
+TASKS=${TASKS:-operator_hotspot,stream_load_balance,compute_comm_overlap,layer_operator_balance,rank_load_balance}
 PADOC="$ROOT/target/release/padoc"
 
 mkdir -p "$ART" "$RES"

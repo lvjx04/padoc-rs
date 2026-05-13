@@ -648,6 +648,7 @@ dependencies = [
  "flate2",
  "humansize",
  "indexmap",
+ "libc",
  "memmap2",
  "once_cell",
  "pretty_assertions",

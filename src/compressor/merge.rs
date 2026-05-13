@@ -226,9 +226,9 @@ fn extend_cpu(dst: &mut MergeEvent, src: MergeEvent) -> Result<()> {
             dst.name_pattern, dst.arg_keys, src.arg_keys
         )));
     }
-    dst.ts.extend(src.ts);
-    dst.dur.extend(src.dur);
-    dst.id.extend(src.id);
+    dst.ts.extend_from(src.ts);
+    dst.dur.extend_from(src.dur);
+    dst.id.extend_from(src.id);
     extend_args_columns(&mut dst.args_columns, src.args_columns)?;
     extend_name_nums(&mut dst.name_nums, src.name_nums)?;
     Ok(())
@@ -241,11 +241,11 @@ fn extend_gpu(dst: &mut MergeKernelEvent, src: MergeKernelEvent) -> Result<()> {
             dst.name_pattern
         )));
     }
-    dst.ts.extend(src.ts);
-    dst.dur.extend(src.dur);
-    dst.pid.extend(src.pid);
-    dst.stream_tid.extend(src.stream_tid);
-    dst.ph.extend(src.ph);
+    dst.ts.extend_from(src.ts);
+    dst.dur.extend_from(src.dur);
+    dst.pid.extend_from(src.pid);
+    dst.stream_tid.extend_from(src.stream_tid);
+    dst.ph.extend_from(src.ph);
     extend_args_columns(&mut dst.args_columns, src.args_columns)?;
     extend_name_nums(&mut dst.name_nums, src.name_nums)?;
     Ok(())

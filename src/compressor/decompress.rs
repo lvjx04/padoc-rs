@@ -144,9 +144,9 @@ fn emit_gpu(
         _ => return,
     };
     let i = instance as usize;
-    let pid = tmpl.pid.get(i).copied().unwrap_or(0);
-    let tid = tmpl.stream_tid.get(i).cloned().unwrap_or_default();
-    let phase = tmpl.ph.get(i).copied().unwrap_or(Phase::COMPLETE);
+    let pid = tmpl.pid.get(i).unwrap_or(0);
+    let tid = tmpl.stream_tid.get(i).unwrap_or_default().to_string();
+    let phase = tmpl.ph.get(i).unwrap_or(Phase::COMPLETE);
     let event = build_gpu_event(tmpl, i, pid, &tid, phase, start_ts);
     push(trace, rank, pid, &tid, phase, event);
 }
@@ -156,9 +156,9 @@ fn build_cpu_event(tmpl: &MergeEvent, i: usize, pid: i64, tid: &str, phase: Phas
     let name = utils::restore_digits(&tmpl.name_pattern, &nums);
     // ts in CompressedTrace is already in per-rank relative form (matches the
     // loaded Trace).  Callers that need absolute ts should add `start_timestamp[rank]`.
-    let ts = tmpl.ts.get(i).copied().unwrap_or(0);
-    let dur = tmpl.dur.get(i).copied();
-    let id = tmpl.id.get(i).copied();
+    let ts = tmpl.ts.get(i).unwrap_or(0);
+    let dur = tmpl.dur.get(i);
+    let id = tmpl.id.get(i);
     let args = decode_args(&tmpl.arg_keys, &tmpl.args_columns, i);
     Event {
         name,
@@ -178,8 +178,8 @@ fn build_cpu_event(tmpl: &MergeEvent, i: usize, pid: i64, tid: &str, phase: Phas
 fn build_gpu_event(tmpl: &MergeKernelEvent, i: usize, pid: i64, tid: &str, phase: Phase, _start_ts: i64) -> Event {
     let nums = decode_name_nums(&tmpl.name_nums, i);
     let name = utils::restore_digits(&tmpl.name_pattern, &nums);
-    let ts = tmpl.ts.get(i).copied().unwrap_or(0);
-    let dur = tmpl.dur.get(i).copied();
+    let ts = tmpl.ts.get(i).unwrap_or(0);
+    let dur = tmpl.dur.get(i);
     let args = decode_args(&tmpl.arg_keys, &tmpl.args_columns, i);
     Event {
         name,
@@ -206,8 +206,8 @@ fn decode_args(arg_keys: &[String], args_columns: &[ArgColumn], i: usize) -> Opt
     // and must round-trip into the rebuilt args map.
     let mut map = AHashMap::with_capacity(arg_keys.len());
     for (k, col) in arg_keys.iter().zip(args_columns.iter()) {
-        if let Some(v) = col.get(i) {
-            map.insert(k.clone(), v.clone());
+        if let Some(v) = col.get_owned(i) {
+            map.insert(k.clone(), v);
         }
     }
     if map.is_empty() {

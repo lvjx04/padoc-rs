@@ -12,8 +12,7 @@ use super::config::CompressorConfig;
 use super::core::TemplateCompressor;
 use crate::event::{MergeEvent, MergeKernelEvent};
 use crate::node::{Node, SameCpuNode, TemplateId};
-use crate::event::ArgColumn;
-use crate::slp::{compress_name_nums, SlpColumn};
+use crate::slp::compress_name_nums;
 
 /// Compress one sub-tree.  Public so it can be invoked iteratively from
 /// the call-tree builder.  Recursive but bounded by the original tree depth
@@ -346,20 +345,16 @@ pub(crate) fn finalize_cpu_template(tmpl: &mut MergeEvent, config: &CompressorCo
     }
     if config.enable_args_dedup {
         for col in tmpl.args_columns.iter_mut() {
-            dedup_arg_column(col);
+            col.compact();
         }
     }
-    if config.enable_slp {
-        let _slp_ts = SlpColumn::encode(&tmpl.ts);
-        let _slp_dur = SlpColumn::encode(&tmpl.dur);
-        let _slp_id = SlpColumn::encode(&tmpl.id);
-        // We don't yet store the SLP-encoded form on disk — that is the next
-        // pass once `Template` learns to carry encoded columns.  Today the
-        // raw columns survive into msgpack (zstd handles the compression).
-        let _ = _slp_ts;
-        let _ = _slp_dur;
-        let _ = _slp_id;
-    }
+    // Numeric column compaction: detect constants + downcast to i32 when in
+    // range.  Cheap (one linear scan per column) and shrinks the in-memory
+    // footprint dramatically for templates whose ts/dur are themselves
+    // bounded (e.g. all CPU events under 4 GiB-microsecond clocks).
+    tmpl.ts.compact();
+    tmpl.dur.compact();
+    tmpl.id.compact();
 }
 
 pub(crate) fn finalize_gpu_template(tmpl: &mut MergeKernelEvent, config: &CompressorConfig) {
@@ -368,25 +363,12 @@ pub(crate) fn finalize_gpu_template(tmpl: &mut MergeKernelEvent, config: &Compre
     }
     if config.enable_args_dedup {
         for col in tmpl.args_columns.iter_mut() {
-            dedup_arg_column(col);
+            col.compact();
         }
     }
-    let _ = config; // SLP wiring identical to the CPU path above; deferred.
-}
-
-/// In-place dedup: if every value in a `PerInstance` column is identical,
-/// collapse to `Constant(value)` — this is the cheap analog of Python's
-/// `compress_same_args` for the all-same case.  Skips columns that are
-/// already constant.  Cost: one linear scan over the column with `==`
-/// against the first element; no clone unless dedup actually triggers.
-fn dedup_arg_column(col: &mut ArgColumn) {
-    if let ArgColumn::PerInstance(values) = col {
-        if values.len() <= 1 {
-            return;
-        }
-        let (first, rest) = values.split_first().unwrap();
-        if rest.iter().all(|v| v == first) {
-            *col = ArgColumn::Constant(values.swap_remove(0));
-        }
-    }
+    tmpl.ts.compact();
+    tmpl.dur.compact();
+    tmpl.pid.compact();
+    tmpl.stream_tid.compact();
+    tmpl.ph.compact();
 }

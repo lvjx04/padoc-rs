@@ -33,7 +33,7 @@ impl AnalysisTask for OperatorHotspot {
         let mut tally: AHashMap<String, i64> = AHashMap::new();
         for tmpl in &compressed.templates {
             let name = tmpl.name_pattern().to_string();
-            let total: i64 = tmpl.dur().iter().copied().sum();
+            let total = tmpl.dur_total();
             *tally.entry(name).or_insert(0) += total;
         }
         Ok(top_n_to_json(tally, self.top_k.max(20)))

@@ -120,6 +120,51 @@ enum BenchCmd {
         #[arg(long, value_delimiter = ',')]
         datasets: Vec<PathBuf>,
     },
+    /// One-cell analysis bench: load a single artifact, run a single
+    /// task, report load_secs / analyze_secs / peak_rss_kb.  Designed
+    /// to be invoked by a driver script (see scripts/analyze_bench.sh)
+    /// once per (compressor, dataset, task) cell so each measurement
+    /// has its own process and the peak-RSS reading isn't contaminated
+    /// by a previous cell's still-allocated heap.
+    AnalyzeOne {
+        /// Compressor name (raw_json, gzip_json, scalatrace, tracezip, padoc).
+        #[arg(long)]
+        compressor: String,
+        /// Path to the compressed artifact file.
+        #[arg(long)]
+        artifact: PathBuf,
+        /// Analysis task name.  See `padoc list`.
+        #[arg(long)]
+        task: String,
+        /// Number of repetitions (median is reported for timings;
+        /// peak_rss is taken from the highest-RSS run).
+        #[arg(long, default_value_t = 1)]
+        repeat: usize,
+    },
+    /// Batched analysis bench: load+decompress ONCE, then run multiple
+    /// tasks against the in-memory representation, timing each task
+    /// separately.  Peak RSS is reported on the final row only — it
+    /// covers the whole process and reflects the union of load +
+    /// every task's transient allocation.  For padoc this amortises
+    /// the (often dominant) deserialise cost across many analyses,
+    /// which is the realistic deployment pattern: you load the
+    /// compressed trace once and answer many questions about it.
+    AnalyzeBatch {
+        /// Compressor name (raw_json, gzip_json, scalatrace, tracezip, padoc).
+        #[arg(long)]
+        compressor: String,
+        /// Path to the compressed artifact file.
+        #[arg(long)]
+        artifact: PathBuf,
+        /// Comma-separated analysis task names (in execution order).
+        #[arg(long, value_delimiter = ',')]
+        tasks: Vec<String>,
+        /// Number of repetitions for each task's `analyze` step
+        /// (load+decompress always run once).  Median analyze_secs
+        /// is reported per task.
+        #[arg(long, default_value_t = 1)]
+        repeat: usize,
+    },
     /// Run analysis tasks on pre-saved compressed artifacts.
     /// For padoc artifacts the analysis runs in-situ on `CompressedTrace`;
     /// for every other compressor we decompress to a `Trace` first, then
@@ -189,6 +234,10 @@ fn main() -> anyhow::Result<()> {
                 )
             }
             BenchCmd::Analyze { datasets } => cmd_bench_analyze(&datasets),
+            BenchCmd::AnalyzeOne { compressor, artifact, task, repeat } =>
+                cmd_bench_analyze_one(&compressor, &artifact, &task, repeat),
+            BenchCmd::AnalyzeBatch { compressor, artifact, tasks, repeat } =>
+                cmd_bench_analyze_batch(&compressor, &artifact, &tasks, repeat),
             BenchCmd::AnalyzeArtifacts { artifact_dir, compressors, datasets, tasks, repeat } =>
                 cmd_bench_analyze_artifacts(&artifact_dir, &compressors, &datasets, &tasks, repeat),
             BenchCmd::Scalability { dimension, values, compressor } => cmd_bench_scalability(&dimension, &values, &compressor),
@@ -556,10 +605,186 @@ fn cmd_bench_analyze_artifacts(
     Ok(())
 }
 
+/// Linux peak RSS in kilobytes since process start.  Returned by the
+/// kernel via `getrusage(RUSAGE_SELF).ru_maxrss`.  `man 2 getrusage`
+/// notes the unit is kilobytes on Linux (despite POSIX saying bytes).
+fn peak_rss_kb() -> u64 {
+    unsafe {
+        let mut ru: libc::rusage = std::mem::zeroed();
+        if libc::getrusage(libc::RUSAGE_SELF, &mut ru) == 0 {
+            ru.ru_maxrss as u64
+        } else {
+            0
+        }
+    }
+}
+
+fn cmd_bench_analyze_one(
+    compressor_name: &str,
+    artifact_path: &Path,
+    task_name: &str,
+    repeat: usize,
+) -> anyhow::Result<()> {
+    let registry = baselines::registry();
+    let compressor = registry
+        .iter()
+        .find(|c| c.name() == compressor_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown compressor `{compressor_name}`"))?;
+    let task_registry = analysis::registry();
+    let task = task_registry
+        .iter()
+        .find(|t| t.name() == task_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown task `{task_name}`"))?;
+    let repeat = repeat.max(1);
+    let bytes_on_disk = std::fs::metadata(artifact_path).map(|m| m.len()).unwrap_or(0);
+
+    // Per-stage timings:
+    //   read     - fs::read or read_from_path's IO portion
+    //   decompress - bytes -> Trace (or CompressedTrace::from_bytes for padoc)
+    //   analyze  - run_in_situ for padoc, run_raw for everything else
+    //
+    // We collect samples then report median to filter out one-off page-cache
+    // effects.  Peak RSS is taken at the END of the *last* repeat so it
+    // covers the whole process lifetime including all repeats.
+    let mut load_samples: Vec<f64> = Vec::with_capacity(repeat);
+    let mut decompress_samples: Vec<f64> = Vec::with_capacity(repeat);
+    let mut analyze_samples: Vec<f64> = Vec::with_capacity(repeat);
+    for _ in 0..repeat {
+        let read_start = std::time::Instant::now();
+        let bytes = std::fs::read(artifact_path)?;
+        let read_secs = read_start.elapsed().as_secs_f64();
+        load_samples.push(read_secs);
+
+        if compressor.name() == "padoc" {
+            // padoc artifact = msgpack(CompressedTrace) inside zstd.  The
+            // load step here unwraps zstd + msgpack but keeps the templates
+            // and node tree in their compressed form (no per-event Trace
+            // expansion).
+            let dec_start = std::time::Instant::now();
+            let ct = padoc::trace::CompressedTrace::from_bytes(&bytes)?;
+            decompress_samples.push(dec_start.elapsed().as_secs_f64());
+            let an_start = std::time::Instant::now();
+            let _ = task.run_in_situ(&ct)?;
+            analyze_samples.push(an_start.elapsed().as_secs_f64());
+        } else {
+            let dec_start = std::time::Instant::now();
+            let trace = compressor.decompress(&bytes)?;
+            decompress_samples.push(dec_start.elapsed().as_secs_f64());
+            let an_start = std::time::Instant::now();
+            let _ = task.run_raw(&trace)?;
+            analyze_samples.push(an_start.elapsed().as_secs_f64());
+        }
+    }
+
+    let read_med = median(&mut load_samples);
+    let dec_med = median(&mut decompress_samples);
+    let an_med = median(&mut analyze_samples);
+    let rss = peak_rss_kb();
+
+    // TSV row: easy to aggregate from a driver script.
+    println!(
+        "{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}",
+        compressor_name,
+        task_name,
+        artifact_path.display(),
+        read_med,
+        dec_med,
+        an_med,
+        read_med + dec_med + an_med,
+        bytes_on_disk,
+        rss,
+    );
+    Ok(())
+}
+
 fn median(xs: &mut [f64]) -> f64 {
     if xs.is_empty() { return f64::NAN; }
     xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     xs[xs.len() / 2]
+}
+
+/// Batched analysis: read+decompress once, then run every task in
+/// `task_names` against the in-memory representation.  Each task is
+/// re-run `repeat` times so we can report a stable median analyse
+/// time.  Output is one TSV row per task (compressor \t task \t
+/// artifact \t load_secs \t decompress_secs \t analyze_secs \t
+/// total_secs \t bytes \t peak_rss_kb).  Load and decompress columns
+/// are the same across rows (single load); peak_rss_kb is the rusage
+/// peak as of the LAST printed row, capturing the whole process.
+fn cmd_bench_analyze_batch(
+    compressor_name: &str,
+    artifact_path: &Path,
+    task_names: &[String],
+    repeat: usize,
+) -> anyhow::Result<()> {
+    if task_names.is_empty() {
+        anyhow::bail!("--tasks must list at least one task");
+    }
+    let registry = baselines::registry();
+    let compressor = registry
+        .iter()
+        .find(|c| c.name() == compressor_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown compressor `{compressor_name}`"))?;
+    let task_registry = analysis::registry();
+    // Resolve every task name up front; bail early on typos.
+    let tasks: Vec<&Box<dyn analysis::AnalysisTask>> = task_names
+        .iter()
+        .map(|n| task_registry.iter().find(|t| t.name() == n)
+            .ok_or_else(|| anyhow::anyhow!("unknown task `{n}`")))
+        .collect::<anyhow::Result<_>>()?;
+    let repeat = repeat.max(1);
+    let bytes_on_disk = std::fs::metadata(artifact_path).map(|m| m.len()).unwrap_or(0);
+
+    // Step 1: read bytes from disk.
+    let read_start = std::time::Instant::now();
+    let bytes = std::fs::read(artifact_path)?;
+    let read_secs = read_start.elapsed().as_secs_f64();
+
+    // Step 2: decompress / deserialise into in-memory representation.
+    // For padoc this is `CompressedTrace::from_bytes` (zstd + msgpack);
+    // for everything else it's the baseline's full Trace materialisation.
+    enum Loaded {
+        Padoc(padoc::trace::CompressedTrace),
+        Raw(padoc::trace::Trace),
+    }
+    let dec_start = std::time::Instant::now();
+    let loaded = if compressor.name() == "padoc" {
+        Loaded::Padoc(padoc::trace::CompressedTrace::from_bytes(&bytes)?)
+    } else {
+        Loaded::Raw(compressor.decompress(&bytes)?)
+    };
+    let decompress_secs = dec_start.elapsed().as_secs_f64();
+    drop(bytes);
+
+    // Step 3: run each task `repeat` times, collect median analyze time.
+    for (task_name, task) in task_names.iter().zip(tasks.iter()) {
+        let mut samples: Vec<f64> = Vec::with_capacity(repeat);
+        for _ in 0..repeat {
+            let an_start = std::time::Instant::now();
+            match &loaded {
+                Loaded::Padoc(ct)  => { let _ = task.run_in_situ(ct)?; }
+                Loaded::Raw(trace) => { let _ = task.run_raw(trace)?; }
+            }
+            samples.push(an_start.elapsed().as_secs_f64());
+        }
+        let an_med = median(&mut samples);
+        let rss = peak_rss_kb();
+        // Same TSV layout as cmd_bench_analyze_one so the driver
+        // script can append rows from either subcommand.
+        println!(
+            "{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}",
+            compressor_name,
+            task_name,
+            artifact_path.display(),
+            read_secs,
+            decompress_secs,
+            an_med,
+            read_secs + decompress_secs + an_med,
+            bytes_on_disk,
+            rss,
+        );
+    }
+    Ok(())
 }
 
 fn cmd_bench_scalability(dimension: &str, values: &[usize], compressor_name: &str) -> anyhow::Result<()> {

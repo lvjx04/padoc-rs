@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::event::{ArgValue, NameNums};
+use crate::event::{ArgValue, DigitColumn, NameNums};
 
 /// One linear segment.  Reconstruction: `values[i] = start + step * i` for `i in 0..length`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -102,7 +102,14 @@ impl SlpColumn {
 }
 
 /// Transpose a row-major `Vec<Vec<String>>` into columnar form, collapsing
-/// every column whose values are all equal into a 1-element column.
+/// every column whose values are all equal into a [`DigitColumn::Constant`]
+/// and downcasting purely-decimal columns to packed `i32` / `i64` arrays.
+///
+/// This is the in-memory analogue of the Python implementation's
+/// `numpy.asarray(col, dtype=np.int32)` strategy: most digit columns are
+/// small layer / iter / rank counters whose values fit in `i32`, so this
+/// shaves a 24-byte `String` header *plus* heap allocation per instance down
+/// to 4 bytes.
 pub fn compress_name_nums(rows: &NameNums) -> NameNums {
     let rows = match rows {
         NameNums::Empty => return NameNums::Empty,
@@ -116,37 +123,106 @@ pub fn compress_name_nums(rows: &NameNums) -> NameNums {
     if width == 0 {
         return NameNums::Empty;
     }
-    let mut columns: Vec<Vec<String>> = (0..width).map(|_| Vec::with_capacity(rows.len())).collect();
+    let mut string_columns: Vec<Vec<String>> = (0..width).map(|_| Vec::with_capacity(rows.len())).collect();
     for row in rows {
         for (i, v) in row.iter().enumerate().take(width) {
-            columns[i].push(v.clone());
+            string_columns[i].push(v.clone());
         }
     }
-    for col in columns.iter_mut() {
-        if let Some(first) = col.first().cloned() {
-            if col.iter().all(|v| *v == first) {
-                col.truncate(1);
-            }
-        }
-    }
+    let columns: Vec<DigitColumn> = string_columns.into_iter().map(compact_digit_column).collect();
     NameNums::Columnar(columns)
 }
 
-/// Decode the `i`-th instance's digit fillers from `Columnar` form.
+/// Compact one digit column.  Tries (in order):
+///
+/// 1. constant — every entry identical;
+/// 2. fixed-width decimal — every entry is `[0-9]+`, all share one
+///    character width, and the parsed values fit in `i32` (otherwise `i64`);
+/// 3. fall back to `Strings` (hex pointers, mixed widths, etc.).
+fn compact_digit_column(values: Vec<String>) -> DigitColumn {
+    if values.is_empty() {
+        return DigitColumn::Strings(values);
+    }
+    let first = values[0].clone();
+    if values.iter().all(|v| *v == first) {
+        return DigitColumn::Constant(first);
+    }
+
+    // Try decimal downcast.
+    let mut all_decimal = true;
+    let mut max_len: usize = 0;
+    let mut min_len: usize = usize::MAX;
+    let mut min_v: i128 = i128::MAX;
+    let mut max_v: i128 = i128::MIN;
+    for v in values.iter() {
+        if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+            all_decimal = false;
+            break;
+        }
+        if v.len() > max_len {
+            max_len = v.len();
+        }
+        if v.len() < min_len {
+            min_len = v.len();
+        }
+        match v.parse::<i128>() {
+            Ok(parsed) => {
+                if parsed < min_v {
+                    min_v = parsed;
+                }
+                if parsed > max_v {
+                    max_v = parsed;
+                }
+            }
+            Err(_) => {
+                all_decimal = false;
+                break;
+            }
+        }
+    }
+
+    if all_decimal {
+        // We use a single `width` per column.  Two cases:
+        // - all entries already share the same character width => width=N
+        //   so leading-zero padding is preserved on decode.
+        // - widths differ but no entry has a leading zero => width=0 (plain
+        //   decimal) — `format_int_with_width(0)` re-emits without padding.
+        let uniform_width = min_len == max_len;
+        let any_padding = values
+            .iter()
+            .any(|v| v.starts_with('0') && v.len() > 1);
+        let width: u8 = if uniform_width && any_padding {
+            max_len.min(255) as u8
+        } else if !any_padding {
+            0
+        } else {
+            // Heterogeneous leading zeros — can't encode with a single width.
+            return DigitColumn::Strings(values);
+        };
+        if min_v >= i32::MIN as i128 && max_v <= i32::MAX as i128 {
+            let ints: Vec<i32> = values
+                .iter()
+                .map(|v| v.parse::<i32>().unwrap_or(0))
+                .collect();
+            return DigitColumn::I32 { width, values: ints };
+        } else if min_v >= i64::MIN as i128 && max_v <= i64::MAX as i128 {
+            let ints: Vec<i64> = values
+                .iter()
+                .map(|v| v.parse::<i64>().unwrap_or(0))
+                .collect();
+            return DigitColumn::I64 { width, values: ints };
+        }
+    }
+
+    DigitColumn::Strings(values)
+}
+
+/// Decode the `i`-th instance's digit fillers.
 pub fn decode_name_nums(nums: &NameNums, instance: usize) -> Vec<String> {
     match nums {
         NameNums::Empty => Vec::new(),
         NameNums::Rows(rows) => rows.get(instance).cloned().unwrap_or_default(),
-        NameNums::Columnar(cols) => cols
-            .iter()
-            .map(|col| {
-                if col.len() == 1 {
-                    col[0].clone()
-                } else {
-                    col.get(instance).cloned().unwrap_or_default()
-                }
-            })
-            .collect(),
+        NameNums::Columnar(cols) => cols.iter().map(|col| col.get_string(instance)).collect(),
     }
 }
 
@@ -212,12 +288,21 @@ mod tests {
             vec!["3".to_string(), "99".to_string()],
         ]);
         let columnar = compress_name_nums(&rows);
-        match columnar {
-            NameNums::Columnar(cols) => {
-                assert_eq!(cols[0], vec!["1".to_string(), "2".to_string(), "3".to_string()]);
-                assert_eq!(cols[1], vec!["99".to_string()]); // collapsed
-            }
-            _ => panic!(),
+        let decoded: Vec<Vec<String>> = (0..3).map(|i| decode_name_nums(&columnar, i)).collect();
+        assert_eq!(
+            decoded,
+            vec![
+                vec!["1".to_string(), "99".to_string()],
+                vec!["2".to_string(), "99".to_string()],
+                vec!["3".to_string(), "99".to_string()],
+            ]
+        );
+        if let NameNums::Columnar(cols) = columnar {
+            // Second column is constant; first column is typed I32.
+            assert!(matches!(cols[1], crate::event::DigitColumn::Constant(_)));
+            assert!(matches!(cols[0], crate::event::DigitColumn::I32 { .. }));
+        } else {
+            panic!()
         }
     }
 
@@ -225,13 +310,25 @@ mod tests {
     fn name_nums_round_trip_preserves_leading_zeros() {
         let rows = NameNums::Rows(vec![
             vec!["0x".to_string(), "040".to_string()],
-            vec!["0x".to_string(), "07".to_string()],
+            vec!["0x".to_string(), "007".to_string()],
         ]);
         let columnar = compress_name_nums(&rows);
-        // First column collapses (constant); second stays per-instance.
         let inst0 = decode_name_nums(&columnar, 0);
         let inst1 = decode_name_nums(&columnar, 1);
         assert_eq!(inst0, vec!["0x".to_string(), "040".to_string()]);
-        assert_eq!(inst1, vec!["0x".to_string(), "07".to_string()]);
+        assert_eq!(inst1, vec!["0x".to_string(), "007".to_string()]);
+    }
+
+    #[test]
+    fn name_nums_falls_back_to_strings_for_hex_or_mixed_widths() {
+        let rows = NameNums::Rows(vec![
+            vec!["a".to_string(), "1".to_string()],
+            vec!["bf".to_string(), "12".to_string()],
+        ]);
+        let columnar = compress_name_nums(&rows);
+        let inst0 = decode_name_nums(&columnar, 0);
+        let inst1 = decode_name_nums(&columnar, 1);
+        assert_eq!(inst0, vec!["a".to_string(), "1".to_string()]);
+        assert_eq!(inst1, vec!["bf".to_string(), "12".to_string()]);
     }
 }

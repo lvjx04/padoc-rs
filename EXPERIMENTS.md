@@ -15,7 +15,7 @@ Reproduction tag: `git checkout 0768505` on `lvjx04/padoc-rs` and follow the com
 | `unifolm_full` | UniFolm world-model training (AMD GPU) | 4 | 80 223 071 | 22.43 GiB |
 | `llama_full` | LLaMA-70B 1024-rank training | 1024 | 301 288 116 | 69.95 GiB |
 
-All input traces have integer-microsecond timestamps (`scripts/ms2us.py` is a no-op for these four).
+All input traces have integer-microsecond timestamps. The cluster paths in `scripts/manifest_small.json` and `scripts/manifest_llama.json` resolve to the canonical copies under `/mnt/treasure/ljx/`.
 
 ---
 
@@ -178,48 +178,28 @@ operator (`operator_hotspot`), stream / overlap (`stream_load_balance`), layer-b
 ## 7. Reproduction commands
 
 ```bash
-# clone + build
 git clone https://github.com/lvjx04/padoc-rs.git && cd padoc-rs
-git checkout 0768505
 cargo build --release --bin padoc --example inspect_artifact
 
-# 7.1 compress the small datasets (sc1, 32 NUMA cores)
-numactl --interleave=all ./target/release/padoc bench compress \
-    --manifest manifest_small.json \
-    --compressors padoc,raw_json,gzip_json,scalatrace,tracezip \
-    --workers 32 --out-dir /mnt/treasure/ljx/artifacts
+# Section 2 + Section 3.0  — compress every dataset and save artifacts
+scripts/compress_all.sh                         # writes /mnt/treasure/ljx/artifacts/
 
-# 7.2 compress llama_full (sc4, 64 cores, --per-rank for streaming)
-numactl --interleave=all ./target/release/padoc bench compress \
-    --manifest manifest_llama.json \
-    --compressors padoc,raw_json,gzip_json,scalatrace,tracezip \
-    --workers 64 --per-rank \
-    --out-dir /mnt/treasure/ljx/artifacts
+# Section 3.1                                  — inspect_artifact memory profile
+scripts/inspect_all.sh                          # writes results/main/inspect_*.txt
 
-# 7.3 inspect the in-memory layout of a PADOC artifact
-./target/release/examples/inspect_artifact /mnt/treasure/ljx/artifacts/llama_full.padoc.zst
+# Section 4.1–4.3                              — analyse small datasets
+scripts/analyze_small.sh                        # writes results/main/analyze_small.tsv
 
-# 7.4 single-process analyse benchmark (PADOC and the small-dataset baselines)
-TASKS=operator_hotspot,stream_load_balance,layer_operator_balance,rank_load_balance
-for ds in leworldmodel_full qwen3_full unifolm_full; do
-  for c in padoc raw_json gzip_json scalatrace tracezip; do
-    ext=$( [ "$c" = padoc ] && echo padoc.zst || echo "$c.bin" )
-    numactl --interleave=all ./target/release/padoc bench analyze-batch \
-        --compressor "$c" \
-        --artifact "/mnt/treasure/ljx/artifacts/${ds}.${ext}" \
-        --tasks $TASKS --repeat 1
-  done
-done
-
-# 7.5 per-rank analyse benchmark for llama baselines
-ART=/mnt/treasure/ljx/artifacts/llama_full
-for c in raw_json gzip_json scalatrace tracezip; do
-  printf '%s\n' "$ART"/*."$c".bin | xargs -P 48 -I{} \
-    ./target/release/padoc bench analyze-batch \
-        --compressor "$c" --artifact {} --tasks $TASKS --repeat 1
-done | scripts/aggregate_perrank.sh   # sums analyse seconds, takes max RSS
+# Section 4.4                                  — analyse llama_full
+scripts/analyze_llama.sh                        # writes results/main/analyze_llama_*.tsv
 ```
 
-Raw TSV outputs used for every table above are committed under
-`analyze_v6_small.tsv`, `analyze_v6_llama_baselines.tsv`,
-`inspect_v6_small.txt`, and `inspect_llama_v6.txt` at commit `0768505`.
+All raw TSV / inspect outputs that back the tables above live in
+`results/main/`:
+
+```
+results/main/analyze_small.tsv             § 4.1 – 4.3 (3 datasets × 5 compressors × 4 tasks)
+results/main/analyze_llama_baselines.tsv   § 4.4 baselines (per-rank summed)
+results/main/inspect_small.txt             § 3 (lewm + qwen3 + unifolm)
+results/main/inspect_llama.txt             § 3 (llama_full)
+```

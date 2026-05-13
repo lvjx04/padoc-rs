@@ -1,1 +1,7 @@
 /target
+*.log
+*.tmp
+*.bak
+*.zst
+*.bin
+.DS_Store

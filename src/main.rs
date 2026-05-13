@@ -404,12 +404,22 @@ fn run_parallel_for_roundtrip(input: &Path, workers: usize) -> anyhow::Result<pa
 fn cmd_analyze(trace_path: &Path, task: &str, in_situ: bool) -> anyhow::Result<()> {
     let registry = analysis::registry();
     let task = registry.iter().find(|t| t.name() == task).context("unknown task")?;
-    let trace = load_trace(trace_path)?;
     let result = if in_situ {
-        let mut compressor = TemplateCompressor::new();
-        let compressed = compressor.compress(&trace)?;
+        let compressed = if trace_path
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x == "zst" || x == "pdc")
+            .unwrap_or(false)
+        {
+            padoc::trace::CompressedTrace::read_from_path(trace_path)?
+        } else {
+            let trace = load_trace(trace_path)?;
+            let mut compressor = TemplateCompressor::new();
+            compressor.compress(&trace)?
+        };
         task.run_in_situ(&compressed)?
     } else {
+        let trace = load_trace(trace_path)?;
         task.run_raw(&trace)?
     };
     println!("{}", serde_json::to_string_pretty(&result)?);

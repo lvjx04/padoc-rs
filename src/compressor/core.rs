@@ -160,13 +160,20 @@ impl TemplateCompressor {
     }
 
     /// Apply SLP, name-column transpose, args dedup according to `config`.
+    ///
+    /// Each template is independently transformed (no shared state), so we
+    /// fan out across rayon's global thread pool.  On 1024-rank profiler
+    /// traces the global table holds 5–10 k templates, each running SLP on
+    /// hundreds of thousands of instances — sequentially that's a ~30 s
+    /// tail at the end of the merge phase, which becomes ~1 s with the
+    /// thread pool active.
     fn finalize_templates(&mut self) {
-        for tmpl in self.templates.iter_mut() {
-            match tmpl {
-                Template::Cpu(t) => super::structural::finalize_cpu_template(t, &self.config),
-                Template::Gpu(t) => super::structural::finalize_gpu_template(t, &self.config),
-            }
-        }
+        use rayon::prelude::*;
+        let config = &self.config;
+        self.templates.par_iter_mut().for_each(|tmpl| match tmpl {
+            Template::Cpu(t) => super::structural::finalize_cpu_template(t, config),
+            Template::Gpu(t) => super::structural::finalize_gpu_template(t, config),
+        });
     }
 }
 

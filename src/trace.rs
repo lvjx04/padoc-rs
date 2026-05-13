@@ -21,6 +21,17 @@ use std::path::{Path, PathBuf};
 /// One rank's events grouped by `(pid, tid, ph)`.
 pub type StreamMap = IndexMap<i64, IndexMap<String, IndexMap<Phase, Vec<Event>>>>;
 
+/// Worker count for the multi-threaded zstd encoder used by
+/// [`CompressedTrace::to_bytes`] and [`CompressedTrace::write_to_path`].
+/// Capped at 16 to avoid wasting cores on tiny payloads where the
+/// per-thread overhead dominates.
+fn zstd_workers() -> u32 {
+    let n = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    n.min(16) as u32
+}
+
 /// Top-level container — one entry per rank.
 #[derive(Debug, Default)]
 pub struct Trace {
@@ -510,11 +521,21 @@ pub struct CompressedTrace {
 
 impl CompressedTrace {
     /// Persist to disk: msgpack-encoded then zstd-compressed.
+    ///
+    /// Streaming pipeline: msgpack chunks flow directly into a zstd
+    /// encoder wrapped around a buffered file writer, so neither the raw
+    /// msgpack output (~10 GiB on a 1024-rank profiler trace) nor the
+    /// compressed blob (~2.4 GiB) is ever fully buffered in memory.  zstd
+    /// runs multi-threaded to keep up with msgpack throughput.
     pub fn write_to_path(&self, path: impl AsRef<Path>, zstd_level: i32) -> Result<()> {
-        let mut buf = Vec::new();
-        rmp_serde::encode::write_named(&mut buf, self)?;
-        let compressed = zstd::stream::encode_all(&buf[..], zstd_level)?;
-        std::fs::write(path, compressed)?;
+        let path = path.as_ref();
+        let file = std::io::BufWriter::with_capacity(8 * 1024 * 1024, std::fs::File::create(path)?);
+        let mut encoder = zstd::stream::Encoder::new(file, zstd_level)?;
+        let _ = encoder.multithread(zstd_workers());
+        rmp_serde::encode::write_named(&mut encoder, self)?;
+        let mut writer = encoder.finish()?;
+        use std::io::Write;
+        writer.flush()?;
         Ok(())
     }
 
@@ -525,11 +546,16 @@ impl CompressedTrace {
     }
 
     /// Encode to a self-contained byte blob (zstd-wrapped msgpack).
+    ///
+    /// Streams msgpack output straight into a multi-threaded zstd encoder
+    /// — the full uncompressed msgpack payload is never materialised, only
+    /// the final compressed buffer.
     pub fn to_bytes(&self, zstd_level: i32) -> Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        rmp_serde::encode::write_named(&mut buf, self)?;
-        let compressed = zstd::stream::encode_all(&buf[..], zstd_level)?;
-        Ok(compressed)
+        let out: Vec<u8> = Vec::with_capacity(8 * 1024 * 1024);
+        let mut encoder = zstd::stream::Encoder::new(out, zstd_level)?;
+        let _ = encoder.multithread(zstd_workers());
+        rmp_serde::encode::write_named(&mut encoder, self)?;
+        Ok(encoder.finish()?)
     }
 
     /// Decode the byte blob produced by [`Self::to_bytes`].

@@ -548,13 +548,23 @@ impl CompressedTrace {
     ) -> Result<()> {
         let path = path.as_ref();
         let file = std::io::BufWriter::with_capacity(8 * 1024 * 1024, std::fs::File::create(path)?);
-        let mut encoder = zstd::stream::Encoder::new(file, zstd_level)?;
+        let encoder = zstd::stream::Encoder::new(file, zstd_level)?;
+        // 1 MiB BufWriter wrapping the zstd Encoder coalesces rmp_serde's
+        // per-field writes (which are tiny — see `serialize_bench` example)
+        // into chunks large enough that zstd's per-write overhead becomes
+        // negligible.  Without this, qwen3 serialize is 17 s; with this,
+        // 5.6 s.  The same trick is applied in `to_bytes`.
+        let mut buf_enc = std::io::BufWriter::with_capacity(1 << 20, encoder);
         if n_workers > 0 {
-            let _ = encoder.multithread(n_workers);
+            let _ = buf_enc.get_mut().multithread(n_workers);
         }
-        rmp_serde::encode::write_named(&mut encoder, self)?;
-        let mut writer = encoder.finish()?;
+        rmp_serde::encode::write_named(&mut buf_enc, self)?;
         use std::io::Write;
+        buf_enc.flush()?;
+        let encoder = buf_enc
+            .into_inner()
+            .map_err(|e| crate::Error::Other(format!("flush BufWriter: {}", e.error())))?;
+        let mut writer = encoder.finish()?;
         writer.flush()?;
         Ok(())
     }
@@ -578,8 +588,14 @@ impl CompressedTrace {
     /// it single-threaded; multi-threading is opt-in via [`write_to_path_mt`].
     pub fn to_bytes(&self, zstd_level: i32) -> Result<Vec<u8>> {
         let out: Vec<u8> = Vec::with_capacity(8 * 1024 * 1024);
-        let mut encoder = zstd::stream::Encoder::new(out, zstd_level)?;
-        rmp_serde::encode::write_named(&mut encoder, self)?;
+        let encoder = zstd::stream::Encoder::new(out, zstd_level)?;
+        let mut buf_enc = std::io::BufWriter::with_capacity(1 << 20, encoder);
+        rmp_serde::encode::write_named(&mut buf_enc, self)?;
+        use std::io::Write;
+        buf_enc.flush()?;
+        let encoder = buf_enc
+            .into_inner()
+            .map_err(|e| crate::Error::Other(format!("flush BufWriter: {}", e.error())))?;
         Ok(encoder.finish()?)
     }
 

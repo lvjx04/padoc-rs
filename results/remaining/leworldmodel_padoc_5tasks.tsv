@@ -1,0 +1,5 @@
+padoc	operator_hotspot	/mnt/treasure/ljx/artifacts_v6/leworldmodel_full.padoc.zst	0.0131	1.4137	0.0024	1.4291	39343269	577484
+padoc	stream_load_balance	/mnt/treasure/ljx/artifacts_v6/leworldmodel_full.padoc.zst	0.0131	1.4137	0.0004	1.4271	39343269	577484
+padoc	compute_comm_overlap	/mnt/treasure/ljx/artifacts_v6/leworldmodel_full.padoc.zst	0.0131	1.4137	0.0322	1.4589	39343269	577484
+padoc	layer_operator_balance	/mnt/treasure/ljx/artifacts_v6/leworldmodel_full.padoc.zst	0.0131	1.4137	0.0007	1.4274	39343269	577484
+padoc	rank_load_balance	/mnt/treasure/ljx/artifacts_v6/leworldmodel_full.padoc.zst	0.0131	1.4137	0.0275	1.4543	39343269	577484

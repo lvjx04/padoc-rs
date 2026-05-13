@@ -1,0 +1,160 @@
+=== leworldmodel_full ===
+on_disk_bytes	39343269
+templates	4094
+cpu_templates	4021
+gpu_templates	73
+cpu_instances	3438954
+gpu_instances	30435
+nodes	1783991
+node_breakdown	root=33183 cpu=1205628 same_cpu=538581 gpu=12 kernel_launch=5894 kernels_launch=693
+num_column_breakdown	constant=1748 i32=6511 i64=0
+cpu_ts_bytes	14159504	0.013 GiB
+cpu_dur_bytes	13560932	0.013 GiB
+cpu_id_bytes	218544	0.000 GiB
+gpu_ts_bytes	121740	0.000 GiB
+gpu_dur_bytes	121672	0.000 GiB
+gpu_pid_bytes	121728	0.000 GiB
+gpu_ph_bytes	365	0.000 GiB
+gpu_stream_bytes	175776	0.000 GiB
+name_num_vecs_bytes	1891996	0.002 GiB
+name_num_payload_bytes	14512	0.000 GiB
+node_vec_storage_bytes	210585576	0.196 GiB
+node_u32_vec_storage_bytes	9135660	0.009 GiB
+arg_value_count	10324129
+arg_vec_storage_bytes	48544532	0.045 GiB
+arg_payload_bytes	5501763	0.005 GiB
+string_payload_other_bytes	393242	0.000 GiB
+accounted_selected_total_bytes	304547542	0.284 GiB
+on_disk_region_zstd_level	3
+on_disk_region_artifact_bytes	39343269
+on_disk_region	name	msgpack_bytes	zstd_bytes
+on_disk_region	template_headers	665380	57946
+on_disk_region	ts_columns	16292794	4713353
+on_disk_region	dur_columns	3414947	339083
+on_disk_region	ids_pids_phases_streams	270878	45336
+on_disk_region	name_nums	926328	53837
+on_disk_region	args_columns	53189815	20501632
+on_disk_region	rank_node_tree	77928587	12954184
+on_disk_region	node_soft_links	188215449	13573761
+on_disk_region	metadata	361	154
+on_disk_region	start_timestamp	23	35
+=== qwen3_full ===
+on_disk_bytes	285455164
+templates	5498
+cpu_templates	5414
+gpu_templates	84
+cpu_instances	30961798
+gpu_instances	2851776
+nodes	11248516
+node_breakdown	root=312399 cpu=5208093 same_cpu=3808018 gpu=512 kernel_launch=1461196 kernels_launch=458298
+num_column_breakdown	constant=4880 i32=6194 i64=0
+cpu_ts_bytes	151223204	0.141 GiB
+cpu_dur_bytes	113474464	0.106 GiB
+cpu_id_bytes	0	0.000 GiB
+gpu_ts_bytes	11900360	0.011 GiB
+gpu_dur_bytes	11900360	0.011 GiB
+gpu_pid_bytes	11899872	0.011 GiB
+gpu_ph_bytes	420	0.000 GiB
+gpu_stream_bytes	47137632	0.044 GiB
+name_num_vecs_bytes	27203016	0.025 GiB
+name_num_payload_bytes	274548	0.000 GiB
+node_vec_storage_bytes	1607469928	1.497 GiB
+node_u32_vec_storage_bytes	119701780	0.111 GiB
+arg_value_count	52536565
+arg_vec_storage_bytes	451094036	0.420 GiB
+arg_payload_bytes	157549679	0.147 GiB
+string_payload_other_bytes	324433	0.000 GiB
+accounted_selected_total_bytes	2711153732	2.525 GiB
+on_disk_region_zstd_level	3
+on_disk_region_artifact_bytes	285455164
+on_disk_region	name	msgpack_bytes	zstd_bytes
+on_disk_region	template_headers	675808	47646
+on_disk_region	ts_columns	168976140	125503072
+on_disk_region	dur_columns	35295054	14482656
+on_disk_region	ids_pids_phases_streams	16948693	28582
+on_disk_region	name_nums	16427358	337909
+on_disk_region	args_columns	286246715	44784875
+on_disk_region	rank_node_tree	709972834	100147734
+on_disk_region	node_soft_links	1296194922	100638858
+on_disk_region	metadata	42829	4569
+on_disk_region	start_timestamp	3221	1456
+=== unifolm_full ===
+on_disk_bytes	777081067
+templates	16897
+cpu_templates	16633
+gpu_templates	264
+cpu_instances	71993430
+gpu_instances	8229641
+nodes	20335297
+node_breakdown	root=459954 cpu=12205564 same_cpu=7429638 gpu=872 kernel_launch=83054 kernels_launch=156215
+num_column_breakdown	constant=5147 i32=28909 i64=0
+cpu_ts_bytes	377116980	0.351 GiB
+cpu_dur_bytes	305253024	0.284 GiB
+cpu_id_bytes	71303168	0.066 GiB
+gpu_ts_bytes	38867488	0.036 GiB
+gpu_dur_bytes	38677460	0.036 GiB
+gpu_pid_bytes	38867488	0.036 GiB
+gpu_ph_bytes	1320	0.000 GiB
+gpu_stream_bytes	331180485	0.308 GiB
+name_num_vecs_bytes	65649616	0.061 GiB
+name_num_payload_bytes	54800	0.000 GiB
+node_vec_storage_bytes	3375081336	3.143 GiB
+node_u32_vec_storage_bytes	316241096	0.295 GiB
+arg_value_count	246060531
+arg_vec_storage_bytes	1931088124	1.798 GiB
+arg_payload_bytes	327554009	0.305 GiB
+string_payload_other_bytes	1655708	0.002 GiB
+accounted_selected_total_bytes	7218592102	6.723 GiB
+on_disk_region_zstd_level	3
+on_disk_region_artifact_bytes	777081067
+on_disk_region	name	msgpack_bytes	zstd_bytes
+on_disk_region	template_headers	2778337	201646
+on_disk_region	ts_columns	400762973	144343518
+on_disk_region	dur_columns	72828998	6673602
+on_disk_region	ids_pids_phases_streams	137926931	3840454
+on_disk_region	name_nums	30086655	934417
+on_disk_region	args_columns	1331607162	352396895
+on_disk_region	rank_node_tree	1198922883	258250526
+on_disk_region	node_soft_links	2398214600	264151919
+on_disk_region	metadata	695	221
+on_disk_region	start_timestamp	45	45
+=== llama_full ===
+on_disk_bytes	2573666097
+templates	312
+cpu_templates	214
+gpu_templates	98
+cpu_instances	271043072
+gpu_instances	30245044
+nodes	67780289
+node_breakdown	root=2067212 cpu=20791394 same_cpu=22923564 gpu=6144 kernel_launch=18773030 kernels_launch=3218945
+num_column_breakdown	constant=4 i32=716 i64=0
+cpu_ts_bytes	1617974572	1.507 GiB
+cpu_dur_bytes	1047549204	0.976 GiB
+cpu_id_bytes	570425344	0.531 GiB
+gpu_ts_bytes	171115712	0.159 GiB
+gpu_dur_bytes	171115712	0.159 GiB
+gpu_pid_bytes	171115712	0.159 GiB
+gpu_ph_bytes	490	0.000 GiB
+gpu_stream_bytes	468040289	0.436 GiB
+name_num_vecs_bytes	2502784904	2.331 GiB
+name_num_payload_bytes	1063	0.000 GiB
+node_vec_storage_bytes	11965270824	11.144 GiB
+node_u32_vec_storage_bytes	1138670880	1.060 GiB
+arg_value_count	567742850
+arg_vec_storage_bytes	3808381824	3.547 GiB
+arg_payload_bytes	100453388	0.094 GiB
+string_payload_other_bytes	63100	0.000 GiB
+accounted_selected_total_bytes	23732963018	22.103 GiB
+on_disk_region_zstd_level	3
+on_disk_region_artifact_bytes	2573666097
+on_disk_region	name	msgpack_bytes	zstd_bytes
+on_disk_region	template_headers	85398	8105
+on_disk_region	ts_columns	1505735597	1073867885
+on_disk_region	dur_columns	259492391	101498433
+on_disk_region	ids_pids_phases_streams	573876467	153426779
+on_disk_region	name_nums	401632500	2715745
+on_disk_region	args_columns	2037114675	295247430
+on_disk_region	rank_node_tree	5301133265	946110875
+on_disk_region	node_soft_links	8548916485	925145515
+on_disk_region	metadata	175317	20864
+on_disk_region	start_timestamp	13229	5394

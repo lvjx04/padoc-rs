@@ -3,19 +3,21 @@
 //! TraceZip targets distributed tracing spans.  Adapted here:
 //!
 //! * Each event = one span.  `Event.name` is the SRT (Span Retrieval Tree) key.
-//! * Universal columns (one per event in the span): `cat`, `bp`, `s`, `args.*`
-//!   keys whose distinct value count is small.  Each universal value is
-//!   replaced by its dictionary id.
-//! * Local columns (per stream): `ts`, `dur`, `id`, plus high-cardinality
-//!   `args.*` values that aren't worth dictionary-encoding.
+//! * Per-stream events are bucketed by name into SRT nodes.  Each node
+//!   stores parallel column arrays so inter-event redundancy across the
+//!   bucket is compressed by zstd at the end.
 //! * Per-stream `time_base = min(ts)` is subtracted from `ts` so the
 //!   numeric range is small.
+//! * Universal columns (one per event in the bucket): arg keys whose
+//!   distinct value count is small are dictionary-encoded; high-cardinality
+//!   keys are stored verbatim.
 //!
-//! This is the "PADOC without structural / SLP" baseline — its compression
-//! ratio should beat raw/gzip but lose to PADOC because it doesn't exploit
-//! call-tree structure.
+//! Lossless: every `Event` field (`cat`, `bp`, `s`, optional `dur`/`id`,
+//! and `args` including absent vs. present-with-null distinction) is
+//! preserved across compress/decompress.
 
 use crate::baselines::{BaselineCompressor, CompressArtifact};
+use crate::event::{Event, Phase};
 use crate::trace::Trace;
 use crate::Result;
 use ahash::AHashMap;
@@ -28,7 +30,7 @@ pub struct TraceZipCompressor;
 struct TraceZipPayload {
     /// Global string dictionary; `dict_strings[i]` is the i-th distinct string.
     dict_strings: Vec<String>,
-    /// Span Retrieval Tree per stream.
+    /// One Span Retrieval Tree per stream.
     streams: Vec<TraceZipStream>,
 }
 
@@ -39,24 +41,31 @@ struct TraceZipStream {
     tid: String,
     ph: u8,
     time_base: i64,
-    /// SRT bucket per distinct event name.  Each bucket carries every event
-    /// instance that shares that name.
+    /// SRT bucket per distinct event name.
     srt: Vec<SrtNode>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct SrtNode {
     name_dict_id: u32,
-    cat_dict_id: Option<u32>,
+    /// Per-event scalar columns.
     ts_offsets: Vec<i64>,
+    /// `dur_present[i]` = true means `dur[i]` is meaningful; false = original was None.
+    dur_present: Vec<bool>,
     dur: Vec<i64>,
+    id_present: Vec<bool>,
     ids: Vec<i64>,
-    /// Universal arg keys (dict-encoded) and their per-instance dict ids.
-    universal_arg_keys: Vec<u32>,
-    universal_args: Vec<Vec<u32>>,
-    /// Local (high-cardinality) args dumped as raw JSON.
-    local_arg_keys: Vec<u32>,
-    local_args: Vec<Vec<serde_json::Value>>,
+    /// Per-event optional cat / bp / s as dict-id, 0 = absent (offset by +1).
+    cat_dict_id_plus1: Vec<u32>,
+    bp_dict_id_plus1: Vec<u32>,
+    s_dict_id_plus1: Vec<u32>,
+    /// args.* keys dict-encoded.  `arg_keys` is the union across this bucket.
+    arg_keys: Vec<u32>,
+    /// Per-event arg-presence bitmap and arg values (parallel to `arg_keys`).
+    /// `arg_present[i]` is a Vec<bool> of length arg_keys.len();
+    /// `arg_values[i]` only stores values for keys where `arg_present[i][k]`.
+    arg_present: Vec<Vec<bool>>,
+    arg_values: Vec<Vec<serde_json::Value>>,
 }
 
 impl BaselineCompressor for TraceZipCompressor {
@@ -73,7 +82,7 @@ impl BaselineCompressor for TraceZipCompressor {
                 for (tid, phases) in threads {
                     for (ph, events) in phases {
                         if events.is_empty() { continue; }
-                        let mut srt_buckets: AHashMap<String, Vec<&crate::event::Event>> = AHashMap::new();
+                        let mut srt_buckets: AHashMap<String, Vec<&Event>> = AHashMap::new();
                         let mut time_base = i64::MAX;
                         for ev in events {
                             time_base = time_base.min(ev.ts);
@@ -82,67 +91,66 @@ impl BaselineCompressor for TraceZipCompressor {
                         let mut srt: Vec<SrtNode> = Vec::with_capacity(srt_buckets.len());
                         for (name, bucket) in srt_buckets {
                             let name_id = dict.intern(&name);
-                            let cat_id = bucket[0].cat.as_ref().map(|c| dict.intern(c));
-                            let mut ts_offsets = Vec::with_capacity(bucket.len());
-                            let mut dur = Vec::with_capacity(bucket.len());
-                            let mut ids = Vec::with_capacity(bucket.len());
 
-                            // Discover universal vs local keys: count distinct values per arg key.
-                            let mut value_distinct: AHashMap<String, ahash::AHashSet<String>> = AHashMap::new();
+                            // Discover arg keys union.
+                            let mut keys_set: ahash::AHashSet<String> = ahash::AHashSet::new();
                             for ev in &bucket {
                                 if let Some(args) = &ev.args {
-                                    for (k, v) in args {
-                                        value_distinct.entry(k.clone()).or_default().insert(v.to_string());
-                                    }
+                                    for k in args.keys() { keys_set.insert(k.clone()); }
                                 }
                             }
-                            let mut universal_keys: Vec<String> = Vec::new();
-                            let mut local_keys: Vec<String> = Vec::new();
-                            for (k, vs) in &value_distinct {
-                                let dict_threshold = (bucket.len() / 4).max(8);
-                                if vs.len() <= dict_threshold {
-                                    universal_keys.push(k.clone());
-                                } else {
-                                    local_keys.push(k.clone());
-                                }
-                            }
-                            universal_keys.sort();
-                            local_keys.sort();
+                            let mut arg_key_strs: Vec<String> = keys_set.into_iter().collect();
+                            arg_key_strs.sort();
+                            let arg_keys: Vec<u32> = arg_key_strs.iter().map(|k| dict.intern(k)).collect();
 
-                            let universal_key_ids: Vec<u32> = universal_keys.iter().map(|k| dict.intern(k)).collect();
-                            let local_key_ids: Vec<u32> = local_keys.iter().map(|k| dict.intern(k)).collect();
-
-                            let mut universal_args: Vec<Vec<u32>> = Vec::with_capacity(bucket.len());
-                            let mut local_args: Vec<Vec<serde_json::Value>> = Vec::with_capacity(bucket.len());
+                            let mut ts_offsets = Vec::with_capacity(bucket.len());
+                            let mut dur_present = Vec::with_capacity(bucket.len());
+                            let mut dur = Vec::with_capacity(bucket.len());
+                            let mut id_present = Vec::with_capacity(bucket.len());
+                            let mut ids = Vec::with_capacity(bucket.len());
+                            let mut cat_dict_id_plus1 = Vec::with_capacity(bucket.len());
+                            let mut bp_dict_id_plus1 = Vec::with_capacity(bucket.len());
+                            let mut s_dict_id_plus1 = Vec::with_capacity(bucket.len());
+                            let mut arg_present = Vec::with_capacity(bucket.len());
+                            let mut arg_values = Vec::with_capacity(bucket.len());
 
                             for ev in &bucket {
                                 ts_offsets.push(ev.ts - time_base);
-                                dur.push(ev.dur.unwrap_or(0));
-                                ids.push(ev.id.unwrap_or(0));
-                                let mut u_row = Vec::with_capacity(universal_keys.len());
-                                let mut l_row = Vec::with_capacity(local_keys.len());
-                                for k in &universal_keys {
-                                    let v = ev.args.as_ref().and_then(|a| a.get(k)).cloned().unwrap_or(serde_json::Value::Null);
-                                    u_row.push(dict.intern(&v.to_string()));
+                                match ev.dur {
+                                    Some(d) => { dur_present.push(true); dur.push(d); },
+                                    None    => { dur_present.push(false); dur.push(0); },
                                 }
-                                for k in &local_keys {
-                                    let v = ev.args.as_ref().and_then(|a| a.get(k)).cloned().unwrap_or(serde_json::Value::Null);
-                                    l_row.push(v);
+                                match ev.id {
+                                    Some(i) => { id_present.push(true); ids.push(i); },
+                                    None    => { id_present.push(false); ids.push(0); },
                                 }
-                                universal_args.push(u_row);
-                                local_args.push(l_row);
+                                cat_dict_id_plus1.push(ev.cat.as_ref().map(|c| dict.intern(c) + 1).unwrap_or(0));
+                                bp_dict_id_plus1.push(ev.bp.as_ref().map(|b| dict.intern(b) + 1).unwrap_or(0));
+                                s_dict_id_plus1.push(ev.s.as_ref().map(|s| dict.intern(s) + 1).unwrap_or(0));
+
+                                let mut presence = Vec::with_capacity(arg_key_strs.len());
+                                let mut values = Vec::new();
+                                for k in &arg_key_strs {
+                                    match ev.args.as_ref().and_then(|a| a.get(k)) {
+                                        Some(v) => { presence.push(true); values.push(v.clone()); },
+                                        None    => { presence.push(false); },
+                                    }
+                                }
+                                arg_present.push(presence);
+                                arg_values.push(values);
                             }
 
                             srt.push(SrtNode {
                                 name_dict_id: name_id,
-                                cat_dict_id: cat_id,
                                 ts_offsets,
-                                dur,
-                                ids,
-                                universal_arg_keys: universal_key_ids,
-                                universal_args,
-                                local_arg_keys: local_key_ids,
-                                local_args,
+                                dur_present, dur,
+                                id_present, ids,
+                                cat_dict_id_plus1,
+                                bp_dict_id_plus1,
+                                s_dict_id_plus1,
+                                arg_keys,
+                                arg_present,
+                                arg_values,
                             });
                         }
 
@@ -170,42 +178,50 @@ impl BaselineCompressor for TraceZipCompressor {
         let raw = zstd::stream::decode_all(bytes)?;
         let payload: TraceZipPayload = rmp_serde::from_slice(&raw)?;
         let dict = payload.dict_strings;
+        let lookup = |id_plus1: u32| -> Option<String> {
+            if id_plus1 == 0 { None } else { dict.get((id_plus1 - 1) as usize).cloned() }
+        };
         let mut trace = Trace::empty();
         for stream in payload.streams {
-            let mut events: Vec<crate::event::Event> = Vec::new();
+            let mut events: Vec<Event> = Vec::new();
             for node in &stream.srt {
                 let name = dict.get(node.name_dict_id as usize).cloned().unwrap_or_default();
-                let cat = node.cat_dict_id.and_then(|id| dict.get(id as usize)).cloned();
-                let universal_keys: Vec<String> = node.universal_arg_keys.iter()
+                let arg_keys: Vec<String> = node.arg_keys.iter()
                     .filter_map(|i| dict.get(*i as usize).cloned()).collect();
-                let local_keys: Vec<String> = node.local_arg_keys.iter()
-                    .filter_map(|i| dict.get(*i as usize).cloned()).collect();
-                for i in 0..node.ts_offsets.len() {
-                    let mut args = ahash::AHashMap::new();
-                    if let (Some(u_row), false) = (node.universal_args.get(i), universal_keys.is_empty()) {
-                        for (k, v_id) in universal_keys.iter().zip(u_row.iter()) {
-                            let raw = dict.get(*v_id as usize).cloned().unwrap_or_default();
-                            let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
-                            args.insert(k.clone(), parsed);
+                let n = node.ts_offsets.len();
+                for i in 0..n {
+                    let mut args = AHashMap::new();
+                    if let Some(presence) = node.arg_present.get(i) {
+                        let mut vi = 0usize;
+                        for (k, &p) in arg_keys.iter().zip(presence.iter()) {
+                            if p {
+                                let v = node.arg_values.get(i)
+                                    .and_then(|row| row.get(vi))
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null);
+                                args.insert(k.clone(), v);
+                                vi += 1;
+                            }
                         }
                     }
-                    if let Some(l_row) = node.local_args.get(i) {
-                        for (k, v) in local_keys.iter().zip(l_row.iter()) {
-                            args.insert(k.clone(), v.clone());
-                        }
-                    }
-                    events.push(crate::event::Event {
+                    let dur = if *node.dur_present.get(i).unwrap_or(&false) {
+                        Some(*node.dur.get(i).unwrap_or(&0))
+                    } else { None };
+                    let id = if *node.id_present.get(i).unwrap_or(&false) {
+                        Some(*node.ids.get(i).unwrap_or(&0))
+                    } else { None };
+                    let cat = lookup(*node.cat_dict_id_plus1.get(i).unwrap_or(&0));
+                    let bp  = lookup(*node.bp_dict_id_plus1 .get(i).unwrap_or(&0));
+                    let s   = lookup(*node.s_dict_id_plus1  .get(i).unwrap_or(&0));
+                    events.push(Event {
                         name: name.clone(),
                         ts: stream.time_base + node.ts_offsets[i],
-                        dur: Some(node.dur[i]),
-                        cat: cat.clone(),
-                        ph: crate::event::Phase(stream.ph),
+                        dur, cat,
+                        ph: Phase(stream.ph),
                         pid: stream.pid,
                         tid: stream.tid.clone(),
                         args: if args.is_empty() { None } else { Some(args) },
-                        id: Some(node.ids[i]),
-                        bp: None,
-                        s: None,
+                        id, bp, s,
                     });
                 }
             }
@@ -213,7 +229,7 @@ impl BaselineCompressor for TraceZipCompressor {
                 .entry(stream.rank.clone()).or_default()
                 .entry(stream.pid).or_default()
                 .entry(stream.tid.clone()).or_default()
-                .entry(crate::event::Phase(stream.ph)).or_default()
+                .entry(Phase(stream.ph)).or_default()
                 .extend(events);
         }
         Ok(trace)

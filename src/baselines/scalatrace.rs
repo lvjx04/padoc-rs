@@ -5,17 +5,17 @@
 //!
 //! * Per-rank, per-stream event sequence is the input.
 //! * Each event's "type" is `(normalized_name, cat, sorted_arg_keys)`.
-//! * RSD = `(start_index, length, period, type)` describing a repeating
-//!   sub-sequence of length `period` that occurs `length` times consecutively.
-//! * Per-event scalar payloads (`ts`, `dur`, `id`, `args.values`) are
-//!   stored as parallel arrays so RSD can encode the structure even when
-//!   the values vary.
+//! * RSD = `(pattern, repeats)` describing a repeating sub-sequence.
+//!   The greedy encoder runs once per stream over the type-id sequence.
+//! * Per-event scalar payloads (`name`, `ts`, `dur`, `id`, `bp`, `s`,
+//!   `args`) are stored as parallel arrays so the encoder is bit-exact
+//!   even when the values vary across events sharing a structural
+//!   pattern.
 //!
-//! Note: this baseline deliberately does **not** use PADOC's structural /
-//! anchor / SLP machinery.  Its purpose is fair compression-ratio
-//! comparison on AI traces.
+//! Lossless: every `Event` field round-trips exactly.
 
 use crate::baselines::{BaselineCompressor, CompressArtifact};
+use crate::event::{Event, Phase};
 use crate::trace::Trace;
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -34,16 +34,27 @@ struct StreamPayload {
     pid: i64,
     tid: String,
     ph: u8,
-    /// Type table: type_id -> (normalized_name, cat?, arg_keys[])
+    /// Type table: type_id -> (normalized_name, cat?, arg_keys[]).
     types: Vec<TypeEntry>,
-    /// Encoded RSDs.
+    /// RSDs encoding the type-id sequence (structural compression).
+    /// The flattened sequence is reconstructible from `rsds`.
     rsds: Vec<Rsd>,
-    /// Per-event scalars in original sequence order (parallel to flattened RSD reconstruction).
-    /// `payload_names[i]` is the original event name (before digit normalisation).
+    /// Per-event scalars in original sequence order; len == flattened RSD length.
     payload_names: Vec<String>,
     ts: Vec<i64>,
+    dur_present: Vec<bool>,
     dur: Vec<i64>,
+    id_present: Vec<bool>,
     ids: Vec<i64>,
+    /// Optional bp / s as dict-id+1 (0 = absent).  We share the type
+    /// table's name dict for these too, but we use a per-stream
+    /// auxiliary dict for simplicity.
+    aux_strings: Vec<String>,
+    bp_dict_id_plus1: Vec<u32>,
+    s_dict_id_plus1: Vec<u32>,
+    /// Per-event args matching the *event's type's* `arg_keys` order.
+    /// The actual JSON values are stored verbatim per event since they
+    /// vary; the keys come from `types[type_id].arg_keys`.
     args: Vec<Vec<serde_json::Value>>,
 }
 
@@ -73,14 +84,20 @@ impl BaselineCompressor for ScalaTraceCompressor {
                 for (tid, phases) in threads {
                     for (ph, events) in phases {
                         if events.is_empty() { continue; }
-                        // Build type table.
                         let mut types: Vec<TypeEntry> = Vec::new();
                         let mut type_index: ahash::AHashMap<(String, Option<String>, Vec<String>), u32> = ahash::AHashMap::new();
                         let mut sequence: Vec<u32> = Vec::with_capacity(events.len());
                         let mut payload_names: Vec<String> = Vec::with_capacity(events.len());
                         let mut ts: Vec<i64> = Vec::with_capacity(events.len());
+                        let mut dur_present: Vec<bool> = Vec::with_capacity(events.len());
                         let mut dur: Vec<i64> = Vec::with_capacity(events.len());
+                        let mut id_present: Vec<bool> = Vec::with_capacity(events.len());
                         let mut ids: Vec<i64> = Vec::with_capacity(events.len());
+
+                        let mut aux_dict = StringDict::default();
+                        let mut bp_dict_id_plus1 = Vec::with_capacity(events.len());
+                        let mut s_dict_id_plus1  = Vec::with_capacity(events.len());
+
                         let mut args_payload: Vec<Vec<serde_json::Value>> = Vec::with_capacity(events.len());
                         for ev in events {
                             let normalized = crate::utils::normalize_name(&ev.name);
@@ -104,8 +121,16 @@ impl BaselineCompressor for ScalaTraceCompressor {
                             sequence.push(tid_id);
                             payload_names.push(ev.name.clone());
                             ts.push(ev.ts);
-                            dur.push(ev.dur.unwrap_or(0));
-                            ids.push(ev.id.unwrap_or(0));
+                            match ev.dur {
+                                Some(d) => { dur_present.push(true); dur.push(d); },
+                                None    => { dur_present.push(false); dur.push(0); },
+                            }
+                            match ev.id {
+                                Some(i) => { id_present.push(true); ids.push(i); },
+                                None    => { id_present.push(false); ids.push(0); },
+                            }
+                            bp_dict_id_plus1.push(ev.bp.as_ref().map(|b| aux_dict.intern(b) + 1).unwrap_or(0));
+                            s_dict_id_plus1 .push(ev.s .as_ref().map(|s| aux_dict.intern(s) + 1).unwrap_or(0));
                             let row: Vec<serde_json::Value> = arg_keys.iter()
                                 .map(|k| ev.args.as_ref().and_then(|a| a.get(k.as_str())).cloned().unwrap_or(serde_json::Value::Null))
                                 .collect();
@@ -122,8 +147,11 @@ impl BaselineCompressor for ScalaTraceCompressor {
                             rsds,
                             payload_names,
                             ts,
-                            dur,
-                            ids,
+                            dur_present, dur,
+                            id_present, ids,
+                            aux_strings: aux_dict.into_strings(),
+                            bp_dict_id_plus1,
+                            s_dict_id_plus1,
                             args: args_payload,
                         });
                     }
@@ -141,38 +169,49 @@ impl BaselineCompressor for ScalaTraceCompressor {
         let payload: ScalaTracePayload = rmp_serde::from_slice(&raw)?;
         let mut trace = Trace::empty();
         for stream in payload.streams {
-            // Reconstruct sequence from RSDs (we stored the per-event payload in order,
-            // so the RSDs only describe the structural compression — unused here for
-            // decode fidelity but kept on disk for ratio-honest measurement).
-            let _ = stream.rsds;
+            // Re-expand the type-id sequence from the RSDs.
+            let sequence: Vec<u32> = expand_rsd(&stream.rsds);
+            let lookup = |id_plus1: u32| -> Option<String> {
+                if id_plus1 == 0 { None } else { stream.aux_strings.get((id_plus1 - 1) as usize).cloned() }
+            };
             let mut events = Vec::with_capacity(stream.payload_names.len());
             for (i, name) in stream.payload_names.iter().enumerate() {
+                let type_id = sequence.get(i).copied().unwrap_or(0) as usize;
+                let ty = stream.types.get(type_id);
+                let cat = ty.and_then(|t| t.cat.clone());
+                let arg_keys: &[String] = ty.map(|t| t.arg_keys.as_slice()).unwrap_or_default();
+
                 let mut args = ahash::AHashMap::new();
-                let arg_keys: &[String] = stream.types.first().map(|t| t.arg_keys.as_slice()).unwrap_or_default();
                 if let Some(row) = stream.args.get(i) {
                     for (k, v) in arg_keys.iter().zip(row.iter()) {
                         args.insert(k.clone(), v.clone());
                     }
                 }
-                events.push(crate::event::Event {
+                let dur = if *stream.dur_present.get(i).unwrap_or(&false) {
+                    Some(*stream.dur.get(i).unwrap_or(&0))
+                } else { None };
+                let id = if *stream.id_present.get(i).unwrap_or(&false) {
+                    Some(*stream.ids.get(i).unwrap_or(&0))
+                } else { None };
+                let bp = lookup(*stream.bp_dict_id_plus1.get(i).unwrap_or(&0));
+                let s  = lookup(*stream.s_dict_id_plus1 .get(i).unwrap_or(&0));
+                events.push(Event {
                     name: name.clone(),
                     ts: stream.ts.get(i).copied().unwrap_or(0),
-                    dur: stream.dur.get(i).copied(),
-                    cat: None,
-                    ph: crate::event::Phase(stream.ph),
+                    dur,
+                    cat,
+                    ph: Phase(stream.ph),
                     pid: stream.pid,
                     tid: stream.tid.clone(),
                     args: if args.is_empty() { None } else { Some(args) },
-                    id: stream.ids.get(i).copied(),
-                    bp: None,
-                    s: None,
+                    id, bp, s,
                 });
             }
             trace.ranks
                 .entry(stream.rank.clone()).or_default()
                 .entry(stream.pid).or_default()
                 .entry(stream.tid.clone()).or_default()
-                .entry(crate::event::Phase(stream.ph)).or_default()
+                .entry(Phase(stream.ph)).or_default()
                 .extend(events);
         }
         Ok(trace)
@@ -206,4 +245,33 @@ fn encode_rsd(sequence: &[u32]) -> Vec<Rsd> {
         i += period * (repeats as usize);
     }
     out
+}
+
+fn expand_rsd(rsds: &[Rsd]) -> Vec<u32> {
+    let mut out = Vec::new();
+    for r in rsds {
+        for _ in 0..r.repeats {
+            out.extend_from_slice(&r.pattern);
+        }
+    }
+    out
+}
+
+#[derive(Default)]
+struct StringDict {
+    index: ahash::AHashMap<String, u32>,
+    items: Vec<String>,
+}
+
+impl StringDict {
+    fn intern(&mut self, s: &str) -> u32 {
+        if let Some(&id) = self.index.get(s) {
+            return id;
+        }
+        let id = self.items.len() as u32;
+        self.items.push(s.to_string());
+        self.index.insert(s.to_string(), id);
+        id
+    }
+    fn into_strings(self) -> Vec<String> { self.items }
 }

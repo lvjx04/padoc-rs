@@ -14,11 +14,9 @@ impl BaselineCompressor for RawJsonCompressor {
         let bytes = serde_json::to_vec(&serialise_trace(trace))?;
         Ok(CompressArtifact::new(bytes, start.elapsed().as_secs_f64()))
     }
-    fn decompress(&self, _bytes: &[u8]) -> Result<Trace> {
-        // Raw JSON is round-trip-able through the standard chrome-trace path;
-        // bench harness only needs trace -> bytes -> bytes_again, never bytes -> trace.
-        // Stub that returns Empty for the trait surface.
-        Ok(Trace::empty())
+    fn decompress(&self, bytes: &[u8]) -> Result<Trace> {
+        let value: serde_json::Value = serde_json::from_slice(bytes)?;
+        crate::baselines::gzip::rebuild_trace_from_flat(&value)
     }
 }
 
@@ -32,7 +30,10 @@ impl BaselineCompressor for RawMsgpackCompressor {
         let bytes = rmp_serde::to_vec_named(&serialise_trace(trace))?;
         Ok(CompressArtifact::new(bytes, start.elapsed().as_secs_f64()))
     }
-    fn decompress(&self, _bytes: &[u8]) -> Result<Trace> { Ok(Trace::empty()) }
+    fn decompress(&self, bytes: &[u8]) -> Result<Trace> {
+        let value: serde_json::Value = rmp_serde::from_slice(bytes)?;
+        crate::baselines::gzip::rebuild_trace_from_flat(&value)
+    }
 }
 
 /// Flat JSON view of a Trace — every event in one list per rank.  Used by raw / gzip baselines.
@@ -55,6 +56,8 @@ pub(crate) fn serialise_trace(trace: &Trace) -> serde_json::Value {
                         row.insert("tid".into(), serde_json::Value::String(tid.clone()));
                         if let Some(c) = &ev.cat { row.insert("cat".into(), serde_json::Value::String(c.clone())); }
                         if let Some(i) = ev.id { row.insert("id".into(), serde_json::json!(i)); }
+                        if let Some(b) = &ev.bp { row.insert("bp".into(), serde_json::Value::String(b.clone())); }
+                        if let Some(s) = &ev.s { row.insert("s".into(), serde_json::Value::String(s.clone())); }
                         if let Some(a) = &ev.args {
                             let mut args = serde_json::Map::new();
                             for (k, v) in a { args.insert(k.clone(), v.clone()); }

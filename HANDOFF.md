@@ -10,7 +10,7 @@ work, ordered by impact and effort.
 The supporting numbers are in `EXPERIMENTS.md` (paper-style tables) and the
 raw TSVs / inspect dumps under `results/main/`. Drivers are in `scripts/`.
 
-Repo HEAD at the time of writing: commit `af3db6c` on
+Repo HEAD at the time of writing: commit `121d290` on
 [`lvjx04/padoc-rs`](https://github.com/lvjx04/padoc-rs).
 
 ---
@@ -56,7 +56,7 @@ Repo HEAD at the time of writing: commit `af3db6c` on
 ### Compression info (memory / storage profile)
 
 1. how many templates / what does the template tree look like
-2. share of storage: template / timestamp / soft-link edges
+2. share of storage: template / timestamp / node instance refs
 
 ### Analysis-performance breakdown (profile)
 
@@ -92,9 +92,9 @@ Legend: ✅ done; ⚠️ partial — extra work needed; ❌ not started.
 | T4 | LeWorldModel | ✅ | `leworldmodel_full` (3.5 M events) | – |
 | T5 | extra | ✅ | `qwen3_full` (256-rank Qwen3), `unifolm_full` (UniFolm world-model) | – |
 | A1 | operator hotspot | ✅ | `analysis::operator_hotspot` | – |
-| A2 | compute/comm overlap | ✅ | `analysis::compute_comm_overlap`; results in `results/remaining/padoc_5task_analysis.tsv` and `results/remaining/ablation_analyze.tsv` | reports compute_us / comm_us / overlap_us per rank in situ |
-| A3 | per-layer operator balance | ✅ | `analysis::layer_operator_balance` | – |
-| A4 | per-process load balance | ✅ | `analysis::rank_load_balance` (renamed from `parallel_group`); reports `compute_busy_us` and `comm_busy_us` per rank | – |
+| A2 | rank load balance | ✅ | `analysis::rank_load_balance` (renamed from `parallel_group`) | current core task; reports GPU compute/comm balance per rank |
+| A3 | layer-aware GPU analyses | ✅ | `analysis::layer_gpu::{layer_kernel_hotspot, layer_compute_comm_overlap, layer_rank_balance}` | current core tasks; results in `results/remaining/core_layer_analysis.tsv` |
+| A4 | kernel-link ablation | ✅ | `results/remaining/core_kernel_link_coverage.tsv`, `core_kernel_link_ablation.tsv` | default has layer-aware GPU rows; `no_kernel_links` has 0 attributed refs / 0 rows |
 | A5 | additional | open | – | nice-to-have: stragglers / slowest-N report |
 | B1 | uncompressed | ✅ | `baselines::raw_json` | – |
 | B2 | ScalaTrace | ✅ | `baselines::scalatrace` (cross-rank + per-rank fallback for llama-1024) | cross-rank OOMs at 1024 rank scale; per-rank fallback is what we report |
@@ -103,15 +103,15 @@ Legend: ✅ done; ⚠️ partial — extra work needed; ❌ not started.
 | C1 | compression ratio matrix | ✅ | `EXPERIMENTS.md` § 2 | – |
 | D1 | analysis performance matrix | ✅ | `EXPERIMENTS.md` § 4 | – |
 | E1a | template count + tree shape | ✅ | `EXPERIMENTS.md` § 3 (`templates`, `cpu_templates`, `gpu_templates`, `nodes`, `node_breakdown`) | – |
-| E1b | storage share — template / ts / soft-link | ✅ | `results/remaining/on_disk_breakdown.txt`; `examples/inspect_artifact.rs --on-disk` | reports zstd bytes per encoded region for the main artifacts |
+| E1b | storage share — template / ts / node refs | ✅ | `results/remaining/on_disk_breakdown.txt`; `examples/inspect_artifact.rs --on-disk` | reports zstd bytes per encoded region for the main artifacts |
 | F1 | analyse-time breakdown (profile) | ✅ | `PADOC_ANALYSIS_PROFILE=1`; `results/remaining/analysis_profile_padoc.{jsonl,tsv}` | profiles inner in-situ phases per task |
 | G1 | scalability vs #GPUs | ✅ | `scripts/scalability_gpus.sh`; `results/remaining/gpu_scalability.md` | llama subsets for 1/8/64/256 GPUs |
 | G2 | scalability vs #layers | ✅ | `padoc bench scalability --dimension layers`; `results/remaining/synthetic_scalability.md` | synthetic sweep at 8/16/32/64/128 layers |
 | G3 | scalability vs #iterations | ✅ | `padoc bench scalability --dimension iterations`; `results/remaining/synthetic_scalability.md` | synthetic sweep at 1/2/4/8/16 iterations |
 | H1 | compress speed vs threads | ✅ | `scripts/scalability_compress.sh`; `results/remaining/compress_scalability_full.md` | v6 sweep on small datasets plus full llama, workers 1/2/4/8/16/32/64 |
-| H2 | analyse speed vs threads | ❌ | – | All four analyses are currently single-threaded. Decision needed: parallelise `rank_load_balance` and `operator_hotspot` over templates / ranks (rayon) or argue single-thread is already 100×–100 000× faster than baselines and skip. |
+| H2 | analyse speed vs threads | ❌ | – | Current analyses are single-threaded. Optional: parallelise `rank_load_balance` and layer-aware tree walks over ranks if more analysis throughput is needed. |
 | I1 | storage ablation | ✅ | `results/remaining/ablation_storage_from_artifacts.tsv` | full PADOC preset storage ablation on leworldmodel/qwen3/unifolm; llama-scale preset ablation remains optional because of cost |
-| I2 | analyse-perf ablation | ✅ | `results/remaining/ablation_analyze.tsv` | 3 datasets x 8 presets x 5 tasks |
+| I2 | analyse-perf ablation | ✅ | `results/remaining/ablation_analyze.tsv`; current kernel-link ablation in `core_kernel_link_*.tsv` | historical 8-preset matrix plus current default vs `no_kernel_links` validation |
 
 ---
 
@@ -137,8 +137,7 @@ in a column inside the template, not as a standalone event. So an
 analysis that wants to *summarise* events touches templates instead:
 `O(templates)`, where `templates` is 4 K – 17 K on the small datasets
 and **312 on llama**. The structural ratio events / templates is
-965 K× on llama; that's why `operator_hotspot` and
-`layer_operator_balance` are 10³ – 10⁵ times faster on PADOC.
+965 K× on llama; that's why template-oriented tasks such as `operator_hotspot` are orders of magnitude faster on PADOC.
 
 ### 3.2 Constant detection on numeric columns
 
@@ -163,43 +162,21 @@ NumColumn = Empty
 
 For analyses that already iterate templates, the per-template work is
 either constant-time (case 1) or a tight `i32` sum (case 2). For
-analyses that have to look at per-instance values (e.g. instance-level
-`pid` or `stream` for `stream_load_balance`), the `Constant` case
-makes the inner loop disappear — a homogeneous GPU template
-contributes its whole duration sum to one (pid, stream) bucket in
-`O(1)`.
+analyses that have to look at per-instance values, the `Constant` case
+makes the inner loop disappear — a homogeneous GPU template can
+contribute its whole duration sum to one bucket in `O(1)`.
 
 ### 3.3 Pre-computed structure for layer / rank queries
 
 Two specific tasks would otherwise be expensive even on a template
 representation:
 
-* **Layer detection** — every CPU operator name has a trailing layer
-  index like `"Linear_13"`. PADOC's `name_nums` columns store those
-  trailing digits as a **digit column** (i32 with a width attribute,
-  decoded back into the original padded string at read time). Layer
-  detection is therefore one column lookup per template, not one
-  regex per event. On `llama_full` this collapses
-  `layer_operator_balance` from 51.8 s of analyse-only time on
-  ScalaTrace to **0.0005 s** on PADOC — a five-order-of-magnitude
-  gap.
-* **Per-rank busy time** — every rank has its own root node in the
-  template tree, with child offsets that group GPU and comm kernels
-  together. `rank_load_balance` walks each rank's subtree and adds
-  `tmpl.dur_total()` (which is `NumColumn::sum_i64`) into the rank's
-  compute or comm bucket, depending on the template's stream
-  category. Baselines have to globally sort kernel events by
-  `(pid, stream, ts)` before they can produce the same per-rank
-  totals, which is what the 19–22 s of analyse time on the baselines
-  pays for.
+* **Layer/repeated-scope GPU attribution** — the current core layer-aware tasks first identify explicit layer names when present, otherwise use repeated `SameCpu` scopes as model/block instances. They then follow `KernelLaunch` / `KernelsLaunch` CPU-GPU provenance edges to collect the kernels inside that scope. The `no_kernel_links` ablation drops attributed GPU refs to zero, which is the direct evidence that these edges are semantically necessary.
+* **Per-rank busy time** — every rank has its own root node in the template tree, with child offsets that group GPU and comm kernels together. `rank_load_balance` walks each rank's subtree and adds `tmpl.dur_total()` (which is `NumColumn::sum_i64`) into the rank's compute or comm bucket, depending on the template's stream category. Baselines have to globally sort kernel events by `(pid, stream, ts)` before they can produce the same per-rank totals, which is what the 19–22 s of analyse time on the baselines pays for.
 
 ### 3.4 What does **not** speed up
 
-`stream_load_balance` is the lone task whose analyse step is per-event
-on both PADOC and the baselines (every kernel event contributes to
-exactly one (pid, stream) bucket, no template-level shortcut). Even
-there PADOC is 1.6×–3.0× faster on total time because its
-load+decompress is 3×–13× faster.
+`stream_load_balance`, `layer_operator_balance`, and global `compute_comm_overlap` are now historical/background tasks, not the core paper suite. The final core suite is `operator_hotspot`, `rank_load_balance`, and the three layer-aware GPU tasks.
 
 ---
 
@@ -213,7 +190,7 @@ padoc-rs/
 ├── HANDOFF.md              ← this file
 ├── examples/               ← inspect_artifact, load_breakdown, normalize_int_ts, roundtrip_minimal, serialize_bench
 ├── src/
-│   ├── analysis/           ← operator_hotspot, stream_load_balance, layer_operator_balance, parallel_group (= rank_load_balance)
+│   ├── analysis/           ← core: operator_hotspot, rank_load_balance, layer_gpu; historical tasks still present
 │   ├── baselines/          ← raw_json, gzip_json, scalatrace, tracezip
 │   ├── compressor/         ← core, merge, structural, decompress
 │   ├── bench/              ← runner, scalability

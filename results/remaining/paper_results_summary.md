@@ -8,10 +8,11 @@ Current status: the core experiment backlog is complete for the available datase
 
 1. PADOC compresses large AI profiler traces to roughly 24-31x while preserving a queryable structural template representation.
 2. PADOC is not always the smallest byte stream compared with ScalaTrace, but it keeps enough structure to answer analysis tasks without materializing the full raw trace.
-3. In-situ analysis is consistently faster in total time than the strongest baseline on the four baseline-comparison tasks; on template-oriented tasks, the analyze-only speedup is orders of magnitude.
-4. The representation scales to 301M events / 1024 ranks (`llama_full`) in a single merged artifact and answers the current five PADOC tasks in roughly 117-125 seconds total per task, dominated by artifact load/deserialization rather than the analysis logic itself.
-5. Parallel compression has a clear saturation point: fastest measured `llama_full` compression is 32 workers, after which 64 workers regresses.
-6. The ablation data supports the co-design story: smaller on-disk variants can be slower and use more memory, so the right claim is not "every PADOC feature minimizes compressed bytes"; the supported claim is "PADOC preserves analysis-ready structure while maintaining competitive compression."
+3. In-situ analysis is faster than reconstruct-then-scan baselines on the historical baseline-comparison tasks; the final core suite now emphasizes model/rank/structure-aware access patterns.
+4. The new layer-aware GPU tasks validate the structural claim directly: with CPU-GPU kernel links present, GPU kernels can be attributed to CPU model/repeated scopes; with `no_kernel_links`, the layer-aware result rows disappear.
+5. The representation scales to 301M events / 1024 ranks (`llama_full`) in a single merged artifact and answers the current five core PADOC tasks in 110-169 seconds total per task, dominated by artifact load/deserialization plus interval merging for layer-aware overlap.
+6. Parallel compression has a clear saturation point: fastest measured `llama_full` compression is 32 workers, after which 64 workers regresses.
+7. The ablation data supports the co-design story: smaller on-disk variants can be slower and use more memory, so the right claim is not "every PADOC feature minimizes compressed bytes"; the supported claim is "PADOC preserves analysis-ready structure while maintaining competitive compression."
 
 ## 2. Datasets
 
@@ -44,13 +45,52 @@ Baseline compression comparison from `EXPERIMENTS.md`:
 
 Interpretation for the paper:
 
-PADOC is competitive with trace-compression baselines on size and beats JSON/gzip-style storage, but the key advantage is not pure byte ratio. ScalaTrace can be smaller because it discards or regularizes structure more aggressively; PADOC keeps structural templates, typed columns, rank trees, and soft links so analyses can run in situ.
+PADOC is competitive with trace-compression baselines on size and beats JSON/gzip-style storage, but the key advantage is not pure byte ratio. ScalaTrace can be smaller because it discards or regularizes structure more aggressively; PADOC keeps structural templates, typed columns, rank trees, and CPU-GPU provenance links so analyses can run in situ.
 
 ## 4. Analysis Results
 
-### 4.1 Cross-Compressor Speedups
+### 4.1 Core Analysis Tasks
 
-The original baseline comparison covers four tasks: `operator_hotspot`, `stream_load_balance`, `layer_operator_balance`, and `rank_load_balance`.
+The current core analysis set is:
+
+| Task | Purpose | Structural dependency |
+|---|---|---|
+| `operator_hotspot` | Top operator/kernel templates by total duration | template columns |
+| `rank_load_balance` | GPU compute/communication balance across ranks | rank-rooted node tree |
+| `layer_kernel_hotspot` | Hot GPU kernels inside each model/repeated scope | CPU tree + CPU-GPU kernel links |
+| `layer_compute_comm_overlap` | Per-layer/scope compute vs communication overlap | CPU tree + CPU-GPU kernel links |
+| `layer_rank_balance` | Per-layer/scope load imbalance across ranks | CPU tree + CPU-GPU kernel links |
+
+`stream_load_balance`, `layer_operator_balance`, and global `compute_comm_overlap` are no longer core experiments. They are retained as historical/background results only: stream balance is not a model-balance question, `layer_operator_balance` is mainly name-pattern based, and global overlap is superseded by the layer-aware overlap task.
+
+Source: `results/remaining/core_layer_analysis.tsv`. Columns combine read + compressed-deserialize as the load cost.
+
+| Dataset | Read + deserialize | Max analyze time | Slowest core task | Total time range | Peak RSS |
+|---|---:|---:|---|---:|---:|
+| `leworldmodel_full` | 1.460 s | 0.446 s | `layer_rank_balance` | 1.462-1.905 s | 0.55 GiB |
+| `qwen3_full` | 11.659 s | 5.948 s | `layer_compute_comm_overlap` | 11.672-17.607 s | 5.04 GiB |
+| `unifolm_full` | 37.138 s | 8.605 s | `layer_compute_comm_overlap` | 37.173-45.743 s | 14.24 GiB |
+| `llama_full` | 109.766 s | 59.063 s | `layer_compute_comm_overlap` | 109.858-168.829 s | 34.32 GiB |
+
+The layer-aware tasks are intentionally heavier than template-only hotspot analysis because they walk the structural tree and attribute GPU kernels back to CPU model/repeated scopes. Even then, the largest `llama_full` artifact remains analyzable as one merged 1024-rank trace; total time is still dominated by loading/deserializing the 2.40 GiB PADOC artifact plus the interval merge for layer-aware overlap.
+
+### 4.2 Kernel-Link Ablation For Layer-Aware Queries
+
+Source: `results/remaining/core_kernel_link_coverage.tsv`. This is the key ablation for the structure-aware analysis claim. With normal PADOC, layer-aware tasks can attribute GPU kernels to CPU model/repeated scopes. With `padoc_no_kernel_links`, the same tasks return zero attributed GPU refs and zero result rows because the CPU-GPU provenance edge is missing.
+
+| Dataset | Default attributed GPU refs | Default coverage | `no_kernel_links` attributed refs | Result |
+|---|---:|---:|---:|---|
+| `leworldmodel_full` | 4,637 / 29,589 | 15.67% | 0 / 29,589 | layer-aware rows disappear |
+| `qwen3_full` | 1,592,830 / 1,806,096 | 88.19% | 0 / 1,806,096 | layer-aware rows disappear |
+| `unifolm_full` | 449,519 / 7,953,432 | 5.65% | 0 / 7,953,432 | layer-aware rows disappear |
+
+Use `qwen3_full` as the main ablation example in the paper because its profiler scopes expose a high-coverage repeated model structure. `leworldmodel_full` and `unifolm_full` still validate the mechanism, but their traces contain more initialization / utility / framework-level GPU work that does not sit under clean repeated model scopes, so the attributable fraction is lower.
+
+Timing source: `results/remaining/core_kernel_link_ablation.tsv`. The no-link timing should not be interpreted as a useful fast path: the query still walks CPU structure to search for layer scopes, but it cannot produce layer-aware GPU rows without kernel links. The semantic ablation is therefore coverage/row-count, not analysis-time reduction.
+
+### 4.3 Historical Cross-Compressor Speedups
+
+The original baseline comparison covered four earlier tasks: `operator_hotspot`, `stream_load_balance`, `layer_operator_balance`, and `rank_load_balance`. Keep this table only as background evidence that PADOC's template/tree representation is faster than reconstruct-then-scan baselines; do not present the non-core tasks as the final analysis suite.
 
 | Dataset | operator_hotspot total speedup | stream_load_balance total speedup | layer_operator_balance total speedup | rank_load_balance total speedup |
 |---|---:|---:|---:|---:|
@@ -59,7 +99,7 @@ The original baseline comparison covers four tasks: `operator_hotspot`, `stream_
 | `unifolm_full` | 3.0x | 2.3x | 2.6x | 2.3x |
 | `llama_full` | 4.0x | 3.0x | 3.5x | 3.2x |
 
-For `llama_full`, analyze-only speedups against the best baseline are:
+For `llama_full`, historical analyze-only speedups against the best baseline were:
 
 | Task | PADOC analyze-only | Best baseline analyze-only | Speedup |
 |---|---:|---:|---:|
@@ -68,26 +108,7 @@ For `llama_full`, analyze-only speedups against the best baseline are:
 | `layer_operator_balance` | 0.0005 s | 51.84 s | 103,680x |
 | `rank_load_balance` | 2.086 s | 19.30 s | 9.3x |
 
-The total-time speedups are smaller because all methods pay load/decompression cost. The analyze-only speedups are the cleanest evidence for the template-indexed analysis story.
-
-### 4.2 Five-Task PADOC Results
-
-The completed PADOC-only five-task matrix adds `compute_comm_overlap`. Columns below use the current `padoc_5task_analysis.tsv` measurements.
-
-| Dataset | Read + deserialize/decompress | Max task analyze time | Slowest task | Total time range | Peak RSS |
-|---|---:|---:|---|---:|---:|
-| `leworldmodel_full` | 1.424 s | 0.0317 s | `compute_comm_overlap` | 1.424-1.455 s | 0.55 GiB |
-| `qwen3_full` | 11.303 s | 0.4403 s | `compute_comm_overlap` | 11.303-11.743 s | 5.03 GiB |
-| `unifolm_full` | 36.231 s | 1.6640 s | `compute_comm_overlap` | 36.232-37.895 s | 14.14 GiB |
-| `llama_full` | 116.656 s | 8.2837 s | `compute_comm_overlap` | 116.656-124.940 s | 34.11 GiB |
-
-Use this wording:
-
-After the artifact is loaded, most in-situ analyses run in milliseconds to a few seconds even on the 301M-event llama trace. The new overlap task is the slowest because it collects and merges per-rank compute/communication intervals, but even on `llama_full` the analysis phase is 8.28 s; the total is dominated by artifact loading/deserialization.
-
-Important caveat:
-
-The baseline speedup table above is for the original four tasks. `compute_comm_overlap` has PADOC, ablation, and profiling results, but the baseline matrix was not rerun for this fifth task. Do not claim a cross-compressor speedup for `compute_comm_overlap` unless that extra baseline run is added.
+Do not claim cross-compressor speedups for the three new layer-aware GPU tasks unless those baselines are rerun with equivalent CPU-GPU attribution logic. The completed core evidence is PADOC in-situ performance plus the `no_kernel_links` semantic ablation.
 
 ## 5. On-Disk Storage Breakdown
 
@@ -95,10 +116,10 @@ Source: `on_disk_breakdown.txt`, generated by `inspect_artifact --on-disk`.
 
 | Dataset | Artifact | Dominant on-disk regions |
 |---|---:|---|
-| `leworldmodel_full` | 37.52 MiB | args columns 20.50 MB, node soft links 13.57 MB, rank node tree 12.95 MB, timestamp columns 4.71 MB |
-| `qwen3_full` | 272.23 MiB | timestamp columns 125.50 MB, node soft links 100.64 MB, rank node tree 100.15 MB, args columns 44.78 MB |
-| `unifolm_full` | 741.08 MiB | args columns 352.40 MB, node soft links 264.15 MB, rank node tree 258.25 MB, timestamp columns 144.34 MB |
-| `llama_full` | 2.40 GiB | timestamp columns 1.07 GB, rank node tree 946.11 MB, node soft links 925.15 MB, args columns 295.25 MB |
+| `leworldmodel_full` | 37.52 MiB | args columns 20.50 MB, node instance refs 13.57 MB, rank node tree 12.95 MB, timestamp columns 4.71 MB |
+| `qwen3_full` | 272.23 MiB | timestamp columns 125.50 MB, node instance refs 100.64 MB, rank node tree 100.15 MB, args columns 44.78 MB |
+| `unifolm_full` | 741.08 MiB | args columns 352.40 MB, node instance refs 264.15 MB, rank node tree 258.25 MB, timestamp columns 144.34 MB |
+| `llama_full` | 2.40 GiB | timestamp columns 1.07 GB, rank node tree 946.11 MB, node instance refs 925.15 MB, args columns 295.25 MB |
 
 For `llama_full`, the main on-disk contributors are:
 
@@ -106,13 +127,13 @@ For `llama_full`, the main on-disk contributors are:
 |---|---:|---:|
 | `ts_columns` | 1,073,867,885 | 41.7% |
 | `rank_node_tree` | 946,110,875 | 36.8% |
-| `node_soft_links` | 925,145,515 | 35.9% |
+| `node_instance_refs` | 925,145,515 | 35.9% |
 | `args_columns` | 295,247,430 | 11.5% |
 | `ids_pids_phases_streams` | 153,426,779 | 6.0% |
 | `dur_columns` | 101,498,433 | 3.9% |
 | `name_nums` | 2,715,745 | 0.1% |
 
-The shares do not sum to 100% because each region is encoded independently for attribution; it is a contribution profile, not a partition of the exact final zstd stream.
+The shares do not sum to 100% because each region is encoded independently for attribution; it is a contribution profile, not a partition of the exact final zstd stream. The historical region name `node_soft_links` is better interpreted as node instance/reference arrays, not only CPU-GPU kernel links.
 
 ## 6. In-Memory Representation
 
@@ -134,7 +155,9 @@ All surviving numeric columns are either constants or i32 after timestamp normal
 Source files:
 
 - `ablation_storage_from_artifacts.tsv`: 3 datasets x 8 PADOC presets.
-- `ablation_analyze.tsv`: 3 datasets x 8 presets x 5 tasks = 120 rows.
+- `ablation_analyze.tsv`: historical 3 datasets x 8 presets x 5 tasks = 120 rows.
+- `core_kernel_link_ablation.tsv`: current core task timing for default vs `no_kernel_links`.
+- `core_kernel_link_coverage.tsv`: semantic coverage ablation for the three layer-aware GPU tasks.
 
 Storage ablation summary:
 
@@ -209,21 +232,21 @@ The synthetic sweeps provide the expected scalability shape: increasing repeated
 
 ## 9. Analysis Profiling
 
-Source: `analysis_profile_padoc.tsv`.
+Source: `analysis_profile_padoc.tsv` for the historical profile, plus `core_layer_analysis.tsv` for the current core task timings.
 
-Representative `llama_full` profile:
+Representative current `llama_full` analyze-only times:
 
-| Task | Dominant phase | Phase time |
-|---|---|---:|
-| `operator_hotspot` | template tally | 0.068 s |
-| `stream_load_balance` | template stream aggregate | 0.349 s |
-| `compute_comm_overlap` | rank interval collect + merge/json | 4.047 s + 1.655 s |
-| `layer_operator_balance` | template layer aggregate | 0.000245 s |
-| `rank_load_balance` | rank tree walk | 1.850 s |
+| Task | Analyze time | Main work |
+|---|---:|---|
+| `operator_hotspot` | 0.091 s | template tally |
+| `rank_load_balance` | 2.074 s | rank tree walk |
+| `layer_kernel_hotspot` | 23.620 s | layer/scope attribution over CPU-GPU links |
+| `layer_compute_comm_overlap` | 59.063 s | layer/scope attribution plus interval merge |
+| `layer_rank_balance` | 31.066 s | layer/scope attribution plus per-rank summaries |
 
 Interpretation:
 
-The profile supports the mechanism section: most tasks are template- or tree-walk bounded rather than event-scan bounded. `compute_comm_overlap` is intentionally heavier because it constructs and merges intervals.
+The profile supports the mechanism section: template-only tasks are very fast, rank tasks are tree-walk bounded, and layer-aware GPU tasks intentionally pay more work to attribute kernels back to repeated CPU scopes. `layer_compute_comm_overlap` is the heaviest because it also constructs and merges intervals.
 
 ## 10. Data Quality / Sanity Checks
 
@@ -231,38 +254,45 @@ These checks were performed before this summary was written:
 
 | Check | Result |
 |---|---|
-| `padoc_5task_analysis.tsv` row count | 20 rows = 4 datasets x 5 tasks |
-| `ablation_analyze.tsv` row count | 120 rows = 3 datasets x 8 presets x 5 tasks |
+| `padoc_5task_analysis.tsv` row count | 20 rows = historical 4 datasets x 5 tasks |
+| `ablation_analyze.tsv` row count | 120 rows = historical 3 datasets x 8 presets x 5 tasks |
+| `core_layer_analysis.tsv` row count | 20 rows = 4 datasets x 5 current core tasks |
+| `core_kernel_link_coverage.tsv` row count | 18 rows = 3 datasets x 2 presets x 3 layer-aware tasks |
 | `ablation_storage_from_artifacts.tsv` row count | 24 artifact rows + header |
-| `analysis_profile_padoc.jsonl` row count | 20 rows = 4 datasets x 5 tasks |
+| `analysis_profile_padoc.jsonl` row count | 20 rows = historical 4 datasets x 5 tasks |
 | GPU scalability sections | 4 sections = 1/8/64/256 GPUs |
 | Thread scalability sections | 14 sections = 7 worker points for small datasets + 7 for llama |
 | Default PADOC artifact bytes in storage vs analysis ablation | exact match for leworldmodel/qwen3/unifolm |
-| `cargo test --quiet` | passed: 15 library tests + 11 end-to-end tests |
-| Worktree after experiment commits | clean before creating this summary |
+| `cargo test` | passed: 17 library tests + 14 end-to-end tests |
+| Worktree before result-summary commit | only result/docs files pending |
 
 The data is internally consistent and has the expected qualitative behavior:
 
 - Compression ratio is stable or improves with larger repeated traces.
 - Thread scaling improves until saturation, then regresses at excessive parallelism.
-- Analysis time is dominated by load/deserialization, not by the in-situ task logic.
+- Analysis time is usually dominated by load/deserialization; layer-aware overlap also pays a real interval-merge cost, especially on `llama_full`.
 - Minimal/smaller artifacts can cost more memory/time, which is consistent with the co-design tradeoff.
 - The largest dataset (`llama_full`) remains analyzable in one merged PADOC artifact with about 34 GiB peak RSS.
+- The kernel-link ablation is semantically strong: default PADOC produces layer-aware GPU rows, while `no_kernel_links` produces zero attributed GPU refs and zero rows on all three small datasets.
 
 ## 11. Caveats To Keep In The Paper Honest
 
 1. Do not claim PADOC is always the smallest compressor. ScalaTrace often has a better byte ratio, but it does not preserve the same analysis-ready structure.
-2. Do not claim cross-compressor speedup for `compute_comm_overlap` unless the baseline matrix is rerun with that fifth task. Current cross-compressor speedups cover the original four tasks.
-3. Do not claim every ablation feature improves on-disk size. Some smaller variants are worse for analysis time and memory; frame ablation as the storage-analysis tradeoff.
-4. Full llama-scale 8-preset ablation was not run because of cost and memory risk. The completed ablation is full for leworldmodel/qwen3/unifolm.
-5. MoE and ViT rows are absent because the corresponding traces are not available locally.
+2. Do not claim cross-compressor speedup for the three new layer-aware GPU tasks unless the baseline matrix is rerun with equivalent CPU-GPU attribution logic. Current cross-compressor speedups cover the historical task set.
+3. Do not present `stream_load_balance`, `layer_operator_balance`, or global `compute_comm_overlap` as core analysis experiments; they are historical/background only.
+4. Do not claim every ablation feature improves on-disk size. Some smaller variants are worse for analysis time and memory; frame ablation as the storage-analysis tradeoff.
+5. Full llama-scale 8-preset ablation was not run because of cost and memory risk. The completed ablation is full for leworldmodel/qwen3/unifolm.
+6. MoE and ViT rows are absent because the corresponding traces are not available locally.
 
 ## 12. Result File Index
 
 Primary paper tables:
 
 - `EXPERIMENTS.md`: original compression, memory, baseline-analysis, speedup, and lossless verification tables.
-- `results/remaining/padoc_5task_analysis.tsv`: PADOC five-task analysis, including `compute_comm_overlap`.
+- `results/remaining/core_layer_analysis.tsv`: current five-task core PADOC analysis.
+- `results/remaining/core_kernel_link_coverage.tsv`: default vs `no_kernel_links` coverage for layer-aware GPU tasks.
+- `results/remaining/core_kernel_link_ablation.tsv`: default vs `no_kernel_links` timing for current core tasks.
+- `results/remaining/padoc_5task_analysis.tsv`: historical PADOC five-task analysis, including global `compute_comm_overlap`.
 - `results/remaining/on_disk_breakdown.txt`: on-disk region attribution.
 - `results/remaining/ablation_storage_from_artifacts.tsv`: storage ablation.
 - `results/remaining/ablation_analyze.tsv`: analysis ablation.

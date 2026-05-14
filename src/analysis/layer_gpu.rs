@@ -19,11 +19,21 @@ use crate::slp::decode_name_nums;
 use crate::trace::{CompressedTrace, StreamMap, Trace};
 use crate::Result;
 
-static LAYER_PATTERN_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?:^|\.)layers?\.0(?:\.|$)|(?:^|/)layers?/0(?:/|$)").unwrap());
-static RAW_LAYER_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?:^|\.)layers?\.(\d+)(?:\.|$)|(?:^|/)layers?/(\d+)(?:/|$)").unwrap()
+static LAYER_PATTERN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?:^|[^A-Za-z0-9])layers?[._/-]0(?:[^0-9]|$)|(?:^|[^A-Za-z0-9])(?:[A-Za-z]*Layer|[A-Za-z]*Block|ResBlock|ViTLayer)[_-]?0(?:[^0-9]|$)",
+    )
+    .unwrap()
 });
+static RAW_LAYER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?:^|[^A-Za-z0-9])layers?[._/-](\d+)(?:[^0-9]|$)|(?:^|[^A-Za-z0-9])(?:[A-Za-z]*Layer|[A-Za-z]*Block|ResBlock|ViTLayer)[_-]?(\d+)(?:[^0-9]|$)",
+    )
+    .unwrap()
+});
+
+const REPEATED_SCOPE_MIN_INSTANCES: usize = 8;
+const REPEATED_SCOPE_MAX_INSTANCES: usize = 512;
 
 #[derive(Default)]
 pub struct LayerKernelHotspot {
@@ -72,7 +82,7 @@ struct RawGpuKernel {
 #[derive(Clone)]
 struct RawLayerGpu {
     rank: String,
-    layer: i64,
+    layer: String,
     gpu: RawGpuKernel,
 }
 
@@ -82,10 +92,10 @@ impl AnalysisTask for LayerKernelHotspot {
     }
 
     fn run_raw(&self, trace: &Trace) -> Result<Value> {
-        let mut tally: AHashMap<(i64, String), KernelAgg> = AHashMap::new();
+        let mut tally: AHashMap<(String, String), KernelAgg> = AHashMap::new();
         let raw = collect_raw_layer_gpu(trace);
         for item in &raw.items {
-            let key = (item.layer, crate::utils::normalize_name(&item.gpu.name));
+            let key = (item.layer.clone(), crate::utils::normalize_name(&item.gpu.name));
             let entry = tally.entry(key).or_default();
             entry.count += 1;
             entry.total_dur_us += item.gpu.dur;
@@ -101,7 +111,7 @@ impl AnalysisTask for LayerKernelHotspot {
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
         let start = std::time::Instant::now();
-        let mut tally: AHashMap<(i64, String), KernelAgg> = AHashMap::new();
+        let mut tally: AHashMap<(String, String), KernelAgg> = AHashMap::new();
         let mut coverage = Coverage {
             total_gpu_refs: total_gpu_kernel_refs(compressed),
             ..Coverage::default()
@@ -114,7 +124,7 @@ impl AnalysisTask for LayerKernelHotspot {
                 return;
             }
             coverage.attributed_gpu_refs += 1;
-            let key = (layer, g.name_pattern.clone());
+            let key = (layer.to_string(), g.name_pattern.clone());
             let entry = tally.entry(key).or_default();
             entry.count += 1;
             entry.total_dur_us += g.dur.get(gpu.inst_id as usize).unwrap_or(0);
@@ -139,11 +149,11 @@ impl AnalysisTask for LayerComputeCommOverlap {
     }
 
     fn run_raw(&self, trace: &Trace) -> Result<Value> {
-        let mut by_rank_layer: AHashMap<(String, i64), IntervalAgg> = AHashMap::new();
+        let mut by_rank_layer: AHashMap<(String, String), IntervalAgg> = AHashMap::new();
         let raw = collect_raw_layer_gpu(trace);
         for item in &raw.items {
             let entry = by_rank_layer
-                .entry((item.rank.clone(), item.layer))
+                .entry((item.rank.clone(), item.layer.clone()))
                 .or_default();
             push_interval(entry, &item.gpu.name, item.gpu.ts, item.gpu.dur);
         }
@@ -156,7 +166,7 @@ impl AnalysisTask for LayerComputeCommOverlap {
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
         let start = std::time::Instant::now();
-        let mut by_rank_layer: AHashMap<(String, i64), IntervalAgg> = AHashMap::new();
+        let mut by_rank_layer: AHashMap<(String, String), IntervalAgg> = AHashMap::new();
         let mut coverage = Coverage {
             total_gpu_refs: total_gpu_kernel_refs(compressed),
             ..Coverage::default()
@@ -174,7 +184,9 @@ impl AnalysisTask for LayerComputeCommOverlap {
                 return;
             }
             coverage.attributed_gpu_refs += 1;
-            let entry = by_rank_layer.entry((rank.to_string(), layer)).or_default();
+            let entry = by_rank_layer
+                .entry((rank.to_string(), layer.to_string()))
+                .or_default();
             push_interval(entry, &g.name_pattern, ts, dur);
         });
         let collect_secs = elapsed_secs(start);
@@ -196,11 +208,11 @@ impl AnalysisTask for LayerRankBalance {
     }
 
     fn run_raw(&self, trace: &Trace) -> Result<Value> {
-        let mut by_rank_layer: AHashMap<(String, i64), RankLayerAgg> = AHashMap::new();
+        let mut by_rank_layer: AHashMap<(String, String), RankLayerAgg> = AHashMap::new();
         let raw = collect_raw_layer_gpu(trace);
         for item in &raw.items {
             let entry = by_rank_layer
-                .entry((item.rank.clone(), item.layer))
+                .entry((item.rank.clone(), item.layer.clone()))
                 .or_default();
             if is_nccl_kernel(&item.gpu.name) {
                 entry.comm_us += item.gpu.dur;
@@ -217,7 +229,7 @@ impl AnalysisTask for LayerRankBalance {
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
         let start = std::time::Instant::now();
-        let mut by_rank_layer: AHashMap<(String, i64), RankLayerAgg> = AHashMap::new();
+        let mut by_rank_layer: AHashMap<(String, String), RankLayerAgg> = AHashMap::new();
         let mut coverage = Coverage {
             total_gpu_refs: total_gpu_kernel_refs(compressed),
             ..Coverage::default()
@@ -231,7 +243,9 @@ impl AnalysisTask for LayerRankBalance {
             }
             let dur = g.dur.get(gpu.inst_id as usize).unwrap_or(0);
             coverage.attributed_gpu_refs += 1;
-            let entry = by_rank_layer.entry((rank.to_string(), layer)).or_default();
+            let entry = by_rank_layer
+                .entry((rank.to_string(), layer.to_string()))
+                .or_default();
             if is_nccl_kernel(&g.name_pattern) {
                 entry.comm_us += dur;
             } else {
@@ -267,25 +281,25 @@ struct RawCollection {
 enum ActiveLayer {
     #[default]
     None,
-    One(i64),
-    Many(Arc<[Option<i64>]>),
+    One(String),
+    Many(Arc<[Option<String>]>),
 }
 
 impl ActiveLayer {
-    fn from_option(layer: Option<i64>) -> Self {
+    fn from_option(layer: Option<String>) -> Self {
         match layer {
             Some(layer) => ActiveLayer::One(layer),
             None => ActiveLayer::None,
         }
     }
 
-    fn from_layers(layers: Vec<Option<i64>>) -> Self {
-        let mut unique = layers.iter().copied().flatten();
+    fn from_layers(layers: Vec<Option<String>>) -> Self {
+        let mut unique = layers.iter().filter_map(|layer| layer.as_deref());
         let Some(first) = unique.next() else {
             return ActiveLayer::None;
         };
         if unique.all(|layer| layer == first) && layers.iter().all(Option::is_some) {
-            ActiveLayer::One(first)
+            ActiveLayer::One(first.to_string())
         } else {
             ActiveLayer::Many(layers.into())
         }
@@ -298,27 +312,27 @@ impl ActiveLayer {
         }
     }
 
-    fn at(&self, idx: usize) -> Option<i64> {
+    fn at(&self, idx: usize) -> Option<String> {
         match self {
             ActiveLayer::None => None,
-            ActiveLayer::One(layer) => Some(*layer),
-            ActiveLayer::Many(layers) => layers.get(idx).copied().flatten(),
+            ActiveLayer::One(layer) => Some(layer.clone()),
+            ActiveLayer::Many(layers) => layers.get(idx).cloned().flatten(),
         }
     }
 
-    fn scalar(&self) -> Option<i64> {
+    fn scalar(&self) -> Option<String> {
         match self {
-            ActiveLayer::One(layer) => Some(*layer),
+            ActiveLayer::One(layer) => Some(layer.clone()),
             ActiveLayer::None | ActiveLayer::Many(_) => None,
         }
     }
 }
 
-fn walk_layer_subtrees(compressed: &CompressedTrace, mut f: impl FnMut(i64, GpuKernel)) {
+fn walk_layer_subtrees(compressed: &CompressedTrace, mut f: impl FnMut(&str, GpuKernel)) {
     walk_rank_layer_subtrees(compressed, |_rank, layer, gpu| f(layer, gpu));
 }
 
-fn walk_rank_layer_subtrees(compressed: &CompressedTrace, mut f: impl FnMut(&str, i64, GpuKernel)) {
+fn walk_rank_layer_subtrees(compressed: &CompressedTrace, mut f: impl FnMut(&str, &str, GpuKernel)) {
     for (rank, processes) in &compressed.ranks {
         for threads in processes.values() {
             for phases in threads.values() {
@@ -335,7 +349,7 @@ fn walk_node_for_layers(
     rank: &str,
     node: &Node,
     active_layer: ActiveLayer,
-    f: &mut impl FnMut(&str, i64, GpuKernel),
+    f: &mut impl FnMut(&str, &str, GpuKernel),
 ) {
     match node {
         Node::Root { children } => {
@@ -355,12 +369,15 @@ fn walk_node_for_layers(
             }
         }
         Node::SameCpu(n) => {
+            let repeated_scope = repeated_scope_layers(compressed, n.template, n.instances.len());
             let next_layer = ActiveLayer::from_layers(
                 n.instances
                     .iter()
                     .enumerate()
                     .map(|(idx, inst)| {
-                        cpu_instance_layer(compressed, n.template, *inst).or_else(|| active_layer.at(idx))
+                        cpu_instance_layer(compressed, n.template, *inst)
+                            .or_else(|| repeated_scope.as_ref().map(|scope| format!("{scope}#{idx}")))
+                            .or_else(|| active_layer.at(idx))
                     })
                     .collect(),
             )
@@ -380,7 +397,7 @@ fn walk_node_for_layers(
                 for (tmpl_id, inst_id) in n.templates.iter().zip(n.instances.iter()) {
                     f(
                         rank,
-                        layer,
+                        &layer,
                         GpuKernel {
                             tmpl_id: *tmpl_id,
                             inst_id: *inst_id,
@@ -397,7 +414,7 @@ fn walk_node_for_layers(
                         if let Some(layer) = layer {
                             f(
                                 rank,
-                                *layer,
+                                layer,
                                 GpuKernel {
                                     tmpl_id: *tmpl_id,
                                     inst_id: *inst_id,
@@ -415,7 +432,7 @@ fn walk_node_for_layers(
             {
                 f(
                     rank,
-                    layer,
+                    &layer,
                     GpuKernel {
                         tmpl_id: n.gpu_template,
                         inst_id: n.gpu_instance,
@@ -437,7 +454,7 @@ fn walk_node_for_layers(
                 {
                     f(
                         rank,
-                        layer,
+                        &layer,
                         GpuKernel {
                             tmpl_id: *tmpl_id,
                             inst_id: *inst_id,
@@ -453,13 +470,14 @@ fn cpu_instance_layer(
     compressed: &CompressedTrace,
     tmpl_id: TemplateId,
     inst_id: InstanceId,
-) -> Option<i64> {
+) -> Option<String> {
     let Template::Cpu(t) = compressed.templates.get(tmpl_id as usize)? else {
         return None;
     };
     let zero_idx = layer_zero_index(&t.name_pattern)?;
     let digits = decode_name_nums(&t.name_nums, inst_id as usize);
-    digits.get(zero_idx)?.parse::<i64>().ok()
+    let layer = digits.get(zero_idx)?;
+    Some(format!("{}#{}", layer_scope_name(&t.name_pattern), layer))
 }
 
 fn layer_zero_index(pattern: &str) -> Option<usize> {
@@ -474,12 +492,66 @@ fn layer_zero_index(pattern: &str) -> Option<usize> {
     )
 }
 
-fn raw_layer_from_name(name: &str) -> Option<i64> {
+fn raw_layer_from_name(name: &str) -> Option<String> {
     RAW_LAYER_RE.captures(name).and_then(|c| {
         c.get(1)
             .or_else(|| c.get(2))
-            .and_then(|m| m.as_str().parse::<i64>().ok())
+            .map(|m| format!("{}#{}", layer_scope_name(name), m.as_str()))
     })
+}
+
+fn repeated_scope_layers(compressed: &CompressedTrace, tmpl_id: TemplateId, instances: usize) -> Option<String> {
+    if !(REPEATED_SCOPE_MIN_INSTANCES..=REPEATED_SCOPE_MAX_INSTANCES).contains(&instances) {
+        return None;
+    }
+    let Template::Cpu(t) = compressed.templates.get(tmpl_id as usize)? else {
+        return None;
+    };
+    let scope = layer_scope_name(&t.name_pattern);
+    if is_low_value_repeated_scope(&scope) {
+        None
+    } else {
+        Some(scope)
+    }
+}
+
+fn layer_scope_name(name: &str) -> String {
+    let mut scope = crate::utils::normalize_name(name);
+    if let Some(pos) = scope.rfind(':') {
+        let (_, tail) = scope.split_at(pos + 1);
+        scope = tail.trim().to_string();
+    }
+    scope = scope
+        .trim()
+        .trim_matches(|c: char| c == '<' || c == '>' || c == '"' || c == '\'')
+        .to_string();
+    if scope.is_empty() {
+        "scope".to_string()
+    } else {
+        scope
+    }
+}
+
+fn is_low_value_repeated_scope(scope: &str) -> bool {
+    matches!(
+        scope,
+        "suLaunchKernel"
+            | "cudaLaunchKernel"
+            | "hipLaunchKernel"
+            | "aten::empty"
+            | "aten::detach"
+            | "detach"
+            | "aten::zero_"
+            | "aten::fill_"
+            | "aten::copy_"
+            | "aten::to"
+            | "aten::_to_copy"
+            | "aten::uniform_"
+            | "aten::item"
+            | "aten::_local_scalar_dense"
+            | "AddBackward0"
+            | "CloneBackward0"
+    )
 }
 
 fn collect_raw_layer_gpu(trace: &Trace) -> RawCollection {
@@ -542,22 +614,22 @@ fn collect_cpu_stream_layer_gpu(
             .then_with(|| b.dur.unwrap_or(0).cmp(&a.dur.unwrap_or(0)))
     });
 
-    let mut stack: Vec<(i64, Option<i64>)> = Vec::new();
+    let mut stack: Vec<(i64, Option<String>)> = Vec::new();
     for ev in sorted {
         let dur = ev.dur.unwrap_or(0).max(0);
         let end_ts = ev.ts + dur;
         while stack.last().is_some_and(|(end, _)| *end <= ev.ts) {
             stack.pop();
         }
-        let inherited = stack.last().and_then(|(_, layer)| *layer);
+        let inherited = stack.last().and_then(|(_, layer)| layer.clone());
         let active_layer = raw_layer_from_name(&ev.name).or(inherited);
-        if let (Some(layer), Some(corr)) = (active_layer, event_correlation(ev)) {
+        if let (Some(layer), Some(corr)) = (active_layer.as_ref(), event_correlation(ev)) {
             if used_corrs.insert(corr) {
                 if let Some(gpu) = gpu_by_corr.get(&corr) {
                     out.coverage.attributed_gpu_refs += 1;
                     out.items.push(RawLayerGpu {
                         rank: rank.to_string(),
-                        layer,
+                        layer: layer.clone(),
                         gpu: gpu.clone(),
                     });
                 }
@@ -592,8 +664,8 @@ fn push_interval(entry: &mut IntervalAgg, kernel_name: &str, ts: i64, dur: i64) 
     }
 }
 
-fn kernel_hotspot_json(tally: AHashMap<(i64, String), KernelAgg>, top_k: usize) -> Value {
-    let mut rows: Vec<(i64, String, KernelAgg)> = tally
+fn kernel_hotspot_json(tally: AHashMap<(String, String), KernelAgg>, top_k: usize) -> Value {
+    let mut rows: Vec<(String, String, KernelAgg)> = tally
         .into_iter()
         .map(|((layer, kernel), agg)| (layer, kernel, agg))
         .collect();
@@ -619,7 +691,10 @@ fn kernel_hotspot_json(tally: AHashMap<(i64, String), KernelAgg>, top_k: usize) 
     )
 }
 
-fn overlap_json(by_rank_layer: AHashMap<(String, i64), IntervalAgg>, coverage: Coverage) -> Value {
+fn overlap_json(
+    by_rank_layer: AHashMap<(String, String), IntervalAgg>,
+    coverage: Coverage,
+) -> Value {
     let mut rows: Vec<Value> = by_rank_layer
         .into_iter()
         .map(|((rank, layer), agg)| {
@@ -652,15 +727,15 @@ fn overlap_json(by_rank_layer: AHashMap<(String, i64), IntervalAgg>, coverage: C
 }
 
 fn rank_balance_json(
-    by_rank_layer: AHashMap<(String, i64), RankLayerAgg>,
+    by_rank_layer: AHashMap<(String, String), RankLayerAgg>,
     coverage: Coverage,
 ) -> Value {
     let mut ranks: Vec<String> = by_rank_layer.keys().map(|(rank, _)| rank.clone()).collect();
     ranks.sort_by(|a, b| rank_cmp(a, b));
     ranks.dedup();
 
-    let mut layers: Vec<i64> = by_rank_layer.keys().map(|(_, layer)| *layer).collect();
-    layers.sort_unstable();
+    let mut layers: Vec<String> = by_rank_layer.keys().map(|(_, layer)| layer.clone()).collect();
+    layers.sort();
     layers.dedup();
 
     let mut rows: Vec<Value> = Vec::with_capacity(layers.len());
@@ -670,7 +745,7 @@ fn rank_balance_json(
         let mut total_values = Vec::with_capacity(ranks.len());
         for rank in &ranks {
             let agg = by_rank_layer
-                .get(&(rank.clone(), layer))
+                .get(&(rank.clone(), layer.clone()))
                 .cloned()
                 .unwrap_or_default();
             compute_values.push(agg.compute_us);
@@ -833,9 +908,9 @@ fn rank_layer_value_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     let ar = a["rank"].as_str().unwrap_or_default();
     let br = b["rank"].as_str().unwrap_or_default();
     rank_cmp(ar, br).then_with(|| {
-        let al = a["layer"].as_i64().unwrap_or(0);
-        let bl = b["layer"].as_i64().unwrap_or(0);
-        al.cmp(&bl)
+        let al = a["layer"].as_str().unwrap_or_default();
+        let bl = b["layer"].as_str().unwrap_or_default();
+        al.cmp(bl)
     })
 }
 

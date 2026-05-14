@@ -92,7 +92,7 @@ Legend: ✅ done; ⚠️ partial — extra work needed; ❌ not started.
 | T4 | LeWorldModel | ✅ | `leworldmodel_full` (3.5 M events) | – |
 | T5 | extra | ✅ | `qwen3_full` (256-rank Qwen3), `unifolm_full` (UniFolm world-model) | – |
 | A1 | operator hotspot | ✅ | `analysis::operator_hotspot` | – |
-| A2 | compute/comm overlap | ⚠️ | `analysis::stream_load_balance` reports per-stream busy time | a true overlap-fraction task (compute_us, comm_us, overlap_us per rank) is **not** implemented |
+| A2 | compute/comm overlap | ✅ | `analysis::compute_comm_overlap`; results in `results/remaining/padoc_5task_analysis.tsv` and `results/remaining/ablation_analyze.tsv` | reports compute_us / comm_us / overlap_us per rank in situ |
 | A3 | per-layer operator balance | ✅ | `analysis::layer_operator_balance` | – |
 | A4 | per-process load balance | ✅ | `analysis::rank_load_balance` (renamed from `parallel_group`); reports `compute_busy_us` and `comm_busy_us` per rank | – |
 | A5 | additional | open | – | nice-to-have: stragglers / slowest-N report |
@@ -103,15 +103,15 @@ Legend: ✅ done; ⚠️ partial — extra work needed; ❌ not started.
 | C1 | compression ratio matrix | ✅ | `EXPERIMENTS.md` § 2 | – |
 | D1 | analysis performance matrix | ✅ | `EXPERIMENTS.md` § 4 | – |
 | E1a | template count + tree shape | ✅ | `EXPERIMENTS.md` § 3 (`templates`, `cpu_templates`, `gpu_templates`, `nodes`, `node_breakdown`) | – |
-| E1b | storage share — template / ts / soft-link | ⚠️ | We have **in-memory** byte breakdown (`EXPERIMENTS.md` § 3.1). | We don't have **on-disk** byte breakdown of the zst (one number per region: templates, ts, dur, args, name_nums, node tree, soft-link `child_offsets`). Easy: extend `examples/inspect_artifact.rs` to (a) clone the loaded `CompressedTrace`, (b) re-encode each field individually with the same zstd level, (c) report bytes per region. |
-| F1 | analyse-time breakdown (profile) | ❌ | – | We have load + decompress + analyse split. Inner profile of analyse (column traversal vs. node-tree walk vs. hash inserts) is not measured. Cheap: add `tracing` spans around the three phases inside each `run_in_situ`. |
-| G1 | scalability vs #GPUs | ❌ | – | We have 256 (qwen3) and 1024 (llama). Need the curve — sub-sample `llama_full/profiler/profiler_*.json` to `gpus = {1, 8, 64, 256}` and re-run compress + analyse. The manifest file already supports passing a subset of files, so this is a wrapper script. |
-| G2 | scalability vs #layers | ❌ | – | Need a synthetic generator that replays the llama template tree at depth `L = {8, 16, 32, 64, 128}`. Lower priority — the in-memory ablation often carries the same paper claim. |
-| G3 | scalability vs #iterations | ❌ | – | Same as G2 with iteration count instead of layer count. |
-| H1 | compress speed vs threads | ⚠️ | We had a v5 sweep (1/2/4/8/16/32 workers); the typed-column refactor in v6 means we **must redo it**. The script is gone; recreate as `scripts/scalability_compress.sh` using `RAYON_NUM_THREADS=N taskset -c 0-N-1 numactl --interleave=all ./target/release/padoc bench compress --workers N`. | rerun on sc1 (small datasets) + sc4 (llama) |
+| E1b | storage share — template / ts / soft-link | ✅ | `results/remaining/on_disk_breakdown.txt`; `examples/inspect_artifact.rs --on-disk` | reports zstd bytes per encoded region for the main artifacts |
+| F1 | analyse-time breakdown (profile) | ✅ | `PADOC_ANALYSIS_PROFILE=1`; `results/remaining/analysis_profile_padoc.{jsonl,tsv}` | profiles inner in-situ phases per task |
+| G1 | scalability vs #GPUs | ✅ | `scripts/scalability_gpus.sh`; `results/remaining/gpu_scalability.md` | llama subsets for 1/8/64/256 GPUs |
+| G2 | scalability vs #layers | ✅ | `padoc bench scalability --dimension layers`; `results/remaining/synthetic_scalability.md` | synthetic sweep at 8/16/32/64/128 layers |
+| G3 | scalability vs #iterations | ✅ | `padoc bench scalability --dimension iterations`; `results/remaining/synthetic_scalability.md` | synthetic sweep at 1/2/4/8/16 iterations |
+| H1 | compress speed vs threads | ✅ | `scripts/scalability_compress.sh`; `results/remaining/compress_scalability_full.md` | v6 sweep on small datasets plus full llama, workers 1/2/4/8/16/32/64 |
 | H2 | analyse speed vs threads | ❌ | – | All four analyses are currently single-threaded. Decision needed: parallelise `rank_load_balance` and `operator_hotspot` over templates / ranks (rayon) or argue single-thread is already 100×–100 000× faster than baselines and skip. |
-| I1 | storage ablation | ❌ | – | Toggle off, one at a time: (a) typed numeric columns (force `i64`), (b) digit packing (force `Vec<String>` for name digits), (c) arg dictionary (force `PerInstance` for args), (d) structural template tree (force per-event), (e) zstd. Report on-disk size and in-memory size delta on `llama_full`. The compaction is centralised in `src/compressor/structural.rs::finalize_*_template`, so each toggle is a single early-return. |
-| I2 | analyse-perf ablation | ❌ | – | Same toggles, same dataset, but report `bench analyze-batch` total + analyse-only seconds per task. Should produce a clean "every typed-column technique buys X seconds on llama" story. |
+| I1 | storage ablation | ✅ | `results/remaining/ablation_storage_from_artifacts.tsv` | full PADOC preset storage ablation on leworldmodel/qwen3/unifolm; llama-scale preset ablation remains optional because of cost |
+| I2 | analyse-perf ablation | ✅ | `results/remaining/ablation_analyze.tsv` | 3 datasets x 8 presets x 5 tasks |
 
 ---
 
@@ -251,20 +251,13 @@ Estimated effort + the section it unlocks in the paper.
 
 | Order | Task | Effort | Unlocks |
 |---|---|---|---|
-| 1 | E1b on-disk byte breakdown | half a day | the storage-profile figure |
-| 2 | H1 compress-time scalability sweep | half a day | the parallel-compress claim |
-| 3 | I1 + I2 ablation (typed columns / digit pack / arg dict / template tree / zstd) | one day | the ablation table — usually the most-cited table in compression papers |
-| 4 | A2 overlap fraction analysis task | one day | covers the only ⚠️ in the analysis-tasks row |
-| 5 | G1 scalability vs #GPUs (sub-sample llama to 1/8/64/256) | one day | scalability figure |
-| 6 | F1 inner profile of analyse (`tracing` spans per phase) | half a day | reviewer ammo |
-| 7 | T2 / T3 MoE / ViT traces | depends on whether we can find one | extra rows for the compression-ratio table |
-| 8 | G2 / G3 #layers / #iterations sweeps | one day each, needs synthetic generator | scalability figure (longer arm) |
-| 9 | H2 multi-threaded analyse | open design | only if reviewers complain |
-| 10 | A5 additional analysis | open | nice-to-have |
+| 1 | T2 / T3 MoE / ViT traces | depends on whether we can find one | extra rows for the compression-ratio table |
+| 2 | H2 multi-threaded analyse | open design | only if reviewers complain |
+| 3 | A5 additional analysis | open | nice-to-have |
 
-Items 1–3 alone give us a complete-looking paper. Anything below 3
-is either contingent on missing data (T2, T3) or is reviewer-defence
-(F1, H2).
+The core experiment backlog is now done. The remaining items are either
+contingent on missing traces (T2, T3) or optional reviewer-defence /
+nice-to-have work (H2, A5).
 
 ---
 

@@ -10,7 +10,8 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 ART=${1:-/mnt/treasure/ljx/artifacts}
 PAR=${2:-48}
 PADOC="$ROOT/target/release/padoc"
-TASKS=operator_hotspot,stream_load_balance,compute_comm_overlap,layer_operator_balance,rank_load_balance
+TASKS=${TASKS:-operator_hotspot,rank_load_balance}
+PADOC_CORE_TASKS=${PADOC_CORE_TASKS:-operator_hotspot,rank_load_balance,layer_kernel_hotspot,layer_compute_comm_overlap,layer_rank_balance}
 
 # --- PADOC: single process, in-situ on merged artifact ---
 PADOC_OUT="$ROOT/results/main/analyze_llama_padoc.tsv"
@@ -18,7 +19,7 @@ echo ">>> llama padoc (single process)" >&2
 numactl --interleave=all "$PADOC" bench analyze-batch \
     --compressor padoc \
     --artifact "$ART/llama_full.padoc.zst" \
-    --tasks "$TASKS" --repeat 1 > "$PADOC_OUT"
+    --tasks "$PADOC_CORE_TASKS" --repeat 1 > "$PADOC_OUT"
 
 # --- baselines: per-rank parallel sweep, then aggregate ---
 BASE_OUT="$ROOT/results/main/analyze_llama_baselines.tsv"

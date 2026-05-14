@@ -8,13 +8,14 @@
 //!   [`AnalysisTask::supports_in_situ`] to decide whether to skip the
 //!   decode step for PADOC.
 //!
-//! The four shipped tasks cover the access patterns the paper evaluates:
+//! The core paper tasks cover both compressed-template aggregation and
+//! structure-aware GPU attribution:
 //!
-//! * `operator_hotspot`        — top-N CPU operator by total dur.
-//! * `stream_load_balance`     — per-GPU-stream busy time distribution.
-//! * `compute_comm_overlap`    — per-rank compute/communication overlap.
-//! * `layer_operator_balance`  — per-layer operator dur distribution.
-//! * `parallel_group`          — TP/DP/PP/EP group inference from comm ops.
+//! * `operator_hotspot`            — top-N operator/kernel by total dur.
+//! * `rank_load_balance`           — per-rank GPU compute/communication balance.
+//! * `layer_kernel_hotspot`        — per-layer GPU kernel hotspots via CPU->GPU links.
+//! * `layer_compute_comm_overlap`  — per-layer compute/communication overlap.
+//! * `layer_rank_balance`          — per-layer, per-rank GPU load balance.
 
 use crate::trace::{CompressedTrace, Trace};
 use crate::Result;
@@ -23,12 +24,14 @@ use std::time::Instant;
 
 mod compute_comm_overlap;
 mod kernel_class;
+mod layer_gpu;
 mod layer_operator_balance;
 mod operator_hotspot;
 mod parallel_group;
 mod stream_load_balance;
 
 pub use compute_comm_overlap::ComputeCommOverlap;
+pub use layer_gpu::{LayerComputeCommOverlap, LayerKernelHotspot, LayerRankBalance};
 pub use layer_operator_balance::LayerOperatorBalance;
 pub use operator_hotspot::OperatorHotspot;
 pub use parallel_group::ParallelGroup;
@@ -37,9 +40,13 @@ pub use stream_load_balance::StreamLoadBalance;
 pub trait AnalysisTask: Send + Sync {
     fn name(&self) -> &str;
     fn run_raw(&self, trace: &Trace) -> Result<Value>;
-    fn supports_in_situ(&self) -> bool { false }
+    fn supports_in_situ(&self) -> bool {
+        false
+    }
     fn run_in_situ(&self, _compressed: &CompressedTrace) -> Result<Value> {
-        Err(crate::Error::Other("in-situ not implemented for this task".into()))
+        Err(crate::Error::Other(
+            "in-situ not implemented for this task".into(),
+        ))
     }
 }
 
@@ -70,9 +77,9 @@ pub(crate) fn elapsed_secs(start: Instant) -> f64 {
 pub fn registry() -> Vec<Box<dyn AnalysisTask>> {
     vec![
         Box::new(OperatorHotspot::default()),
-        Box::new(StreamLoadBalance::default()),
-        Box::new(ComputeCommOverlap),
-        Box::new(LayerOperatorBalance::default()),
         Box::new(ParallelGroup::default()),
+        Box::new(LayerKernelHotspot::default()),
+        Box::new(LayerComputeCommOverlap),
+        Box::new(LayerRankBalance),
     ]
 }

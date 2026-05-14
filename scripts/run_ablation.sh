@@ -1,6 +1,6 @@
 #!/bin/bash
 # PADOC ablation experiment.  Produces artifacts for every compressor preset,
-# then runs the four in-situ analysis tasks on each artifact.
+# then runs the core in-situ analysis tasks on each artifact.
 #
 # Usage:
 #   scripts/run_ablation.sh [artifact_out_dir] [results_dir] [manifest]
@@ -14,7 +14,7 @@ ART=${1:-/mnt/treasure/ljx/artifacts_ablation}
 RES=${2:-"$ROOT/results/remaining"}
 MANIFEST=${3:-"$ROOT/scripts/manifest_small.json"}
 WORKERS=${WORKERS:-32}
-TASKS=${TASKS:-operator_hotspot,stream_load_balance,compute_comm_overlap,layer_operator_balance,rank_load_balance}
+TASKS=${TASKS:-operator_hotspot,rank_load_balance,layer_kernel_hotspot,layer_compute_comm_overlap,layer_rank_balance}
 PADOC="$ROOT/target/release/padoc"
 
 mkdir -p "$ART" "$RES"

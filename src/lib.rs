@@ -18,7 +18,7 @@
 //! * [`slp`]          — segmented linear predictor for ts/dur/id/name compression
 //! * [`compressor`]   — the PADOC `TemplateCompressor` and `CompressorConfig`
 //! * [`baselines`]    — `raw`, `gzip`, `scalatrace`, `tracezip`
-//! * [`analysis`]     — `AnalysisTask` trait + 4 concrete tasks
+//! * [`analysis`]     — `AnalysisTask` trait + core paper analyses
 //! * [`bench`]        — compression matrix, analysis matrix, scalability sweeps
 //! * [`synthetic`]    — parameterised synthetic trace generator
 //! * [`storage_breakdown`], [`tree_stats`] — paper-side profiling helpers

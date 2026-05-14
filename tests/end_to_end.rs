@@ -1,7 +1,13 @@
 //! End-to-end pipeline tests: synthetic trace -> compress -> serialise -> deserialise -> analyse.
 
-use padoc::analysis::{AnalysisTask, ComputeCommOverlap, OperatorHotspot, StreamLoadBalance};
-use padoc::baselines::{BaselineCompressor, GzipMsgpackCompressor, PadocCompressor, RawJsonCompressor, ScalaTraceCompressor, TraceZipCompressor};
+use padoc::analysis::{
+    AnalysisTask, ComputeCommOverlap, LayerComputeCommOverlap, LayerKernelHotspot,
+    LayerRankBalance, OperatorHotspot, StreamLoadBalance,
+};
+use padoc::baselines::{
+    BaselineCompressor, GzipMsgpackCompressor, PadocCompressor, RawJsonCompressor,
+    ScalaTraceCompressor, TraceZipCompressor,
+};
 use padoc::compressor::{all_ablation_presets, CompressorConfig, TemplateCompressor};
 use padoc::storage_breakdown::{measure_on_disk_regions, measure_storage};
 use padoc::synthetic::{generate_trace, SyntheticTraceSpec};
@@ -51,8 +57,14 @@ fn every_baseline_can_compress_synthetic_trace() {
     ];
 
     for c in &baselines {
-        let artifact = c.compress(&trace).unwrap_or_else(|e| panic!("{} failed: {}", c.name(), e));
-        assert!(!artifact.bytes.is_empty(), "{} produced empty payload", c.name());
+        let artifact = c
+            .compress(&trace)
+            .unwrap_or_else(|e| panic!("{} failed: {}", c.name(), e));
+        assert!(
+            !artifact.bytes.is_empty(),
+            "{} produced empty payload",
+            c.name()
+        );
     }
 }
 
@@ -95,11 +107,96 @@ fn padoc_in_situ_compute_comm_overlap_matches_raw_totals() {
     let compressed = compressor.compress(&trace).expect("compress");
     let in_situ = task.run_in_situ(&compressed).expect("in-situ");
 
-    assert_eq!(raw.as_array().unwrap().len(), in_situ.as_array().unwrap().len());
+    assert_eq!(
+        raw.as_array().unwrap().len(),
+        in_situ.as_array().unwrap().len()
+    );
     let raw_first = raw.as_array().unwrap().first().unwrap();
     let situ_first = in_situ.as_array().unwrap().first().unwrap();
-    assert_eq!(raw_first["compute_total_us"], situ_first["compute_total_us"]);
+    assert_eq!(
+        raw_first["compute_total_us"],
+        situ_first["compute_total_us"]
+    );
     assert_eq!(raw_first["comm_total_us"], situ_first["comm_total_us"]);
+}
+
+#[test]
+fn padoc_layer_kernel_hotspot_uses_kernel_links() {
+    let trace = generate_trace(&small_spec());
+    let task = LayerKernelHotspot { top_k: 20 };
+    let raw = task.run_raw(&trace).expect("raw");
+
+    let mut compressor = TemplateCompressor::new();
+    let compressed = compressor.compress(&trace).expect("compress");
+    let in_situ = task.run_in_situ(&compressed).expect("in-situ");
+
+    assert_eq!(
+        raw["coverage"]["attributed_gpu_refs"],
+        in_situ["coverage"]["attributed_gpu_refs"]
+    );
+    assert!(in_situ["coverage"]["attributed_gpu_refs"].as_u64().unwrap() > 0);
+    assert!(!in_situ["rows"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn padoc_layer_aware_tasks_run_in_situ() {
+    let trace = generate_trace(&small_spec());
+    let mut compressor = TemplateCompressor::new();
+    let compressed = compressor.compress(&trace).expect("compress");
+
+    let overlap = LayerComputeCommOverlap
+        .run_in_situ(&compressed)
+        .expect("overlap");
+    let balance = LayerRankBalance.run_in_situ(&compressed).expect("balance");
+
+    assert!(overlap["coverage"]["attributed_gpu_refs"].as_u64().unwrap() > 0);
+    assert!(balance["coverage"]["attributed_gpu_refs"].as_u64().unwrap() > 0);
+    assert!(!overlap["rows"].as_array().unwrap().is_empty());
+    assert!(!balance["rows"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn no_kernel_links_ablation_removes_layer_gpu_attribution() {
+    let trace = generate_trace(&small_spec());
+    let task = LayerKernelHotspot { top_k: 20 };
+
+    let mut default_compressor = TemplateCompressor::new();
+    let default_compressed = default_compressor
+        .compress(&trace)
+        .expect("compress default");
+    let default_result = task
+        .run_in_situ(&default_compressed)
+        .expect("default layer gpu");
+
+    let mut cfg = CompressorConfig::default();
+    cfg.enable_kernel_links = false;
+    cfg.label = "no_kernel_links".into();
+    let mut no_links_compressor = TemplateCompressor::with_config(cfg);
+    let no_links_compressed = no_links_compressor
+        .compress(&trace)
+        .expect("compress no links");
+    let no_links_result = task
+        .run_in_situ(&no_links_compressed)
+        .expect("no links layer gpu");
+
+    assert!(
+        default_result["coverage"]["attributed_gpu_refs"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        no_links_result["coverage"]["attributed_gpu_refs"]
+            .as_u64()
+            .unwrap(),
+        0
+    );
+    assert!(
+        no_links_result["coverage"]["total_gpu_refs"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
 }
 
 #[test]
@@ -107,9 +204,14 @@ fn ablation_presets_all_round_trip_through_bytes() {
     let trace = generate_trace(&small_spec());
     for (label, cfg) in all_ablation_presets() {
         let mut compressor = TemplateCompressor::with_config(cfg.clone());
-        let compressed = compressor.compress(&trace).unwrap_or_else(|e| panic!("{label} compress: {e}"));
-        let bytes = compressed.to_bytes(3).unwrap_or_else(|e| panic!("{label} serialise: {e}"));
-        let _reload = CompressedTrace::from_bytes(&bytes).unwrap_or_else(|e| panic!("{label} deserialise: {e}"));
+        let compressed = compressor
+            .compress(&trace)
+            .unwrap_or_else(|e| panic!("{label} compress: {e}"));
+        let bytes = compressed
+            .to_bytes(3)
+            .unwrap_or_else(|e| panic!("{label} serialise: {e}"));
+        let _reload = CompressedTrace::from_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("{label} deserialise: {e}"));
         let _ = cfg;
     }
 }

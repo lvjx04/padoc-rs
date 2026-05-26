@@ -5,8 +5,8 @@ use crate::event::{ArgColumn, NameNums, NumColumn, PhaseColumn, StringColumn, Te
 use crate::node::{InstanceId, Node, TemplateId};
 use crate::trace::CompressedTrace;
 use crate::Result;
-use serde::{Deserialize, Serialize};
 use serde::ser::{SerializeSeq, Serializer};
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -37,9 +37,15 @@ pub struct OnDiskBreakdown {
 }
 
 pub fn measure_storage(compressed: &CompressedTrace) -> StorageBreakdown {
-    let templates_bytes = rmp_serde::to_vec_named(&compressed.templates).map(|b| b.len() as u64).unwrap_or(0);
-    let structure_bytes = rmp_serde::to_vec_named(&compressed.ranks).map(|b| b.len() as u64).unwrap_or(0);
-    let metadata_bytes = rmp_serde::to_vec_named(&compressed.metadata).map(|b| b.len() as u64).unwrap_or(0);
+    let templates_bytes = rmp_serde::to_vec_named(&compressed.templates)
+        .map(|b| b.len() as u64)
+        .unwrap_or(0);
+    let structure_bytes = rmp_serde::to_vec_named(&compressed.ranks)
+        .map(|b| b.len() as u64)
+        .unwrap_or(0);
+    let metadata_bytes = rmp_serde::to_vec_named(&compressed.metadata)
+        .map(|b| b.len() as u64)
+        .unwrap_or(0);
     StorageBreakdown {
         total_bytes: templates_bytes + structure_bytes + metadata_bytes,
         template_bytes: templates_bytes,
@@ -62,13 +68,48 @@ pub fn measure_on_disk_regions(
     let projections = TemplateProjections::new(&compressed.templates);
     let mut regions = Vec::new();
 
-    push_region(&mut regions, "template_headers", &projections.headers, zstd_level)?;
-    push_region(&mut regions, "ts_columns", &projections.ts_columns, zstd_level)?;
-    push_region(&mut regions, "dur_columns", &projections.dur_columns, zstd_level)?;
-    push_region(&mut regions, "ids_pids_phases_streams", &projections.identity_columns, zstd_level)?;
-    push_region(&mut regions, "name_nums", &projections.name_nums, zstd_level)?;
-    push_region(&mut regions, "args_columns", &projections.args_columns, zstd_level)?;
-    push_region(&mut regions, "rank_node_tree", &compressed.ranks, zstd_level)?;
+    push_region(
+        &mut regions,
+        "template_headers",
+        &projections.headers,
+        zstd_level,
+    )?;
+    push_region(
+        &mut regions,
+        "ts_columns",
+        &projections.ts_columns,
+        zstd_level,
+    )?;
+    push_region(
+        &mut regions,
+        "dur_columns",
+        &projections.dur_columns,
+        zstd_level,
+    )?;
+    push_region(
+        &mut regions,
+        "ids_pids_phases_streams",
+        &projections.identity_columns,
+        zstd_level,
+    )?;
+    push_region(
+        &mut regions,
+        "name_nums",
+        &projections.name_nums,
+        zstd_level,
+    )?;
+    push_region(
+        &mut regions,
+        "args_columns",
+        &projections.args_columns,
+        zstd_level,
+    )?;
+    push_region(
+        &mut regions,
+        "rank_node_tree",
+        &compressed.ranks,
+        zstd_level,
+    )?;
     push_region(
         &mut regions,
         "node_soft_links",
@@ -76,7 +117,12 @@ pub fn measure_on_disk_regions(
         zstd_level,
     )?;
     push_region(&mut regions, "metadata", &compressed.metadata, zstd_level)?;
-    push_region(&mut regions, "start_timestamp", &compressed.start_timestamp, zstd_level)?;
+    push_region(
+        &mut regions,
+        "start_timestamp",
+        &compressed.start_timestamp,
+        zstd_level,
+    )?;
 
     Ok(OnDiskBreakdown {
         artifact_bytes,
@@ -312,8 +358,8 @@ fn serialize_node_refs<S: SerializeSeq>(
             for child in &n.children {
                 serialize_node_refs(child, seq)?;
             }
-            for slot in &n.slots {
-                for child in slot {
+            for slot in n.slots.entries() {
+                for child in &slot.children {
                     serialize_node_refs(child, seq)?;
                 }
             }
@@ -374,6 +420,8 @@ fn count_nodes(compressed: &CompressedTrace) -> usize {
 
 fn count_subtree(node: &crate::node::Node) -> usize {
     let mut n = 1;
-    for c in node.children() { n += count_subtree(c); }
+    for c in node.children() {
+        n += count_subtree(c);
+    }
     n
 }

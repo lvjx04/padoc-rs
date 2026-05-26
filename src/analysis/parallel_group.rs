@@ -29,8 +29,8 @@
 use ahash::AHashMap;
 use serde_json::Value;
 
-use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
 use crate::analysis::kernel_class::is_nccl_kernel;
+use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
 use crate::event::Template;
 use crate::node::{InstanceId, Node, TemplateId};
 use crate::trace::{CompressedTrace, Trace};
@@ -40,14 +40,18 @@ use crate::Result;
 pub struct ParallelGroup;
 
 impl AnalysisTask for ParallelGroup {
-    fn name(&self) -> &str { "rank_load_balance" }
+    fn name(&self) -> &str {
+        "rank_load_balance"
+    }
 
     fn run_raw(&self, trace: &Trace) -> Result<Value> {
         let mut compute: AHashMap<String, i64> = AHashMap::new();
-        let mut comm:    AHashMap<String, i64> = AHashMap::new();
+        let mut comm: AHashMap<String, i64> = AHashMap::new();
         for (rank, _pid, _tid, _ph, events) in trace.iter_streams() {
             for ev in events {
-                if ev.cat.as_deref() != Some("kernel") { continue; }
+                if ev.cat.as_deref() != Some("kernel") {
+                    continue;
+                }
                 let dur = ev.dur.unwrap_or(0);
                 if is_nccl_kernel(&ev.name) {
                     *comm.entry(rank.to_string()).or_insert(0) += dur;
@@ -59,7 +63,9 @@ impl AnalysisTask for ParallelGroup {
         Ok(load_balance_json(&compute, &comm))
     }
 
-    fn supports_in_situ(&self) -> bool { true }
+    fn supports_in_situ(&self) -> bool {
+        true
+    }
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
         let start = std::time::Instant::now();
@@ -70,7 +76,11 @@ impl AnalysisTask for ParallelGroup {
             .iter()
             .map(|t| match t {
                 Template::Gpu(g) if g.cat.as_deref() == Some("kernel") => {
-                    if is_nccl_kernel(&g.name_pattern) { 2 } else { 1 }
+                    if is_nccl_kernel(&g.name_pattern) {
+                        2
+                    } else {
+                        1
+                    }
                 }
                 _ => 0,
             })
@@ -79,15 +89,19 @@ impl AnalysisTask for ParallelGroup {
 
         let start = std::time::Instant::now();
         let mut compute: AHashMap<String, i64> = AHashMap::new();
-        let mut comm:    AHashMap<String, i64> = AHashMap::new();
+        let mut comm: AHashMap<String, i64> = AHashMap::new();
         for (rank, processes) in &compressed.ranks {
             for (_pid, threads) in processes {
                 for (_tid, phases) in threads {
                     for (_ph, root) in phases {
                         walk_kernels(root, &mut |tmpl_id, inst_id| {
                             let c = class[tmpl_id as usize];
-                            if c == 0 { return; }
-                            let Template::Gpu(g) = &compressed.templates[tmpl_id as usize] else { return; };
+                            if c == 0 {
+                                return;
+                            }
+                            let Template::Gpu(g) = &compressed.templates[tmpl_id as usize] else {
+                                return;
+                            };
                             let dur = g.dur.get(inst_id as usize).unwrap_or(0);
                             let bucket = if c == 1 { &mut compute } else { &mut comm };
                             *bucket.entry(rank.clone()).or_insert(0) += dur;
@@ -99,11 +113,14 @@ impl AnalysisTask for ParallelGroup {
         let tree_walk_secs = elapsed_secs(start);
         let start = std::time::Instant::now();
         let result = load_balance_json(&compute, &comm);
-        Ok(profiled_result(result, vec![
-            ("template_classification", classify_secs),
-            ("rank_tree_walk", tree_walk_secs),
-            ("summary_json", elapsed_secs(start)),
-        ]))
+        Ok(profiled_result(
+            result,
+            vec![
+                ("template_classification", classify_secs),
+                ("rank_tree_walk", tree_walk_secs),
+                ("summary_json", elapsed_secs(start)),
+            ],
+        ))
     }
 }
 
@@ -114,16 +131,26 @@ impl AnalysisTask for ParallelGroup {
 fn walk_kernels(node: &Node, f: &mut impl FnMut(TemplateId, InstanceId)) {
     match node {
         Node::Root { children } => {
-            for c in children { walk_kernels(c, f); }
+            for c in children {
+                walk_kernels(c, f);
+            }
         }
         Node::Cpu(n) => {
-            for c in &n.children { walk_kernels(c, f); }
-            for s in &n.slots { walk_kernels(s, f); }
+            for c in &n.children {
+                walk_kernels(c, f);
+            }
+            for s in &n.slots {
+                walk_kernels(s, f);
+            }
         }
         Node::SameCpu(n) => {
-            for c in &n.children { walk_kernels(c, f); }
-            for slot in &n.slots {
-                for s in slot { walk_kernels(s, f); }
+            for c in &n.children {
+                walk_kernels(c, f);
+            }
+            for slot in n.slots.entries() {
+                for s in &slot.children {
+                    walk_kernels(s, f);
+                }
             }
         }
         Node::Gpu(g) => {
@@ -142,10 +169,7 @@ fn walk_kernels(node: &Node, f: &mut impl FnMut(TemplateId, InstanceId)) {
     }
 }
 
-fn load_balance_json(
-    compute: &AHashMap<String, i64>,
-    comm:    &AHashMap<String, i64>,
-) -> Value {
+fn load_balance_json(compute: &AHashMap<String, i64>, comm: &AHashMap<String, i64>) -> Value {
     // Union of ranks observed in either bucket; rank may have one without
     // the other (e.g. rank 0 broadcasts but doesn't compute much).
     let mut ranks: Vec<String> = compute.keys().chain(comm.keys()).cloned().collect();
@@ -154,14 +178,14 @@ fn load_balance_json(
     // Prefer numeric sort for "0", "1", ... "1023".
     ranks.sort_by(|a, b| match (a.parse::<i64>(), b.parse::<i64>()) {
         (Ok(x), Ok(y)) => x.cmp(&y),
-        _              => a.cmp(b),
+        _ => a.cmp(b),
     });
 
     let pick = |m: &AHashMap<String, i64>| -> Vec<i64> {
         ranks.iter().map(|r| *m.get(r).unwrap_or(&0)).collect()
     };
     let compute_v = pick(compute);
-    let comm_v    = pick(comm);
+    let comm_v = pick(comm);
 
     serde_json::json!({
         "n_ranks": ranks.len(),
@@ -180,12 +204,20 @@ fn metric_summary(ranks: &[String], values: &[i64]) -> Value {
     }
     let max_v = *values.iter().max().unwrap();
     let min_v = *values.iter().min().unwrap();
-    let n     = values.len() as f64;
-    let mean  = values.iter().sum::<i64>() as f64 / n;
-    let var   = values.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n;
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<i64>() as f64 / n;
+    let var = values
+        .iter()
+        .map(|&v| (v as f64 - mean).powi(2))
+        .sum::<f64>()
+        / n;
     let stddev = var.sqrt();
-    let cv     = if mean > 0.0 { stddev / mean } else { 0.0 };
-    let imbal  = if mean > 0.0 { (max_v as f64 - min_v as f64) / mean } else { 0.0 };
+    let cv = if mean > 0.0 { stddev / mean } else { 0.0 };
+    let imbal = if mean > 0.0 {
+        (max_v as f64 - min_v as f64) / mean
+    } else {
+        0.0
+    };
 
     serde_json::json!({
         "n_ranks":  values.len(),

@@ -18,7 +18,8 @@
 //! * [`Node::KernelLaunch`] — paired CPU launch + GPU kernel correlation.
 //! * [`Node::KernelsLaunch`] — N such pairs sharing the same launch template.
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeTuple;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
 
 /// Index into `CompressedTrace::templates` — a global template table.
@@ -32,7 +33,9 @@ pub type InstanceId = u32;
 pub enum Node {
     /// Sentinel root with no template, used when a forest of independent root
     /// nodes is needed.
-    Root { children: Vec<Node> },
+    Root {
+        children: Vec<Node>,
+    },
 
     Cpu(CpuNode),
     SameCpu(SameCpuNode),
@@ -61,10 +64,127 @@ pub struct SameCpuNode {
     /// `instances.len()` instance ids.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Node>,
-    /// Per-instance unmatched trailers.  `slots[i]` is the trailing nodes that
-    /// belonged to the `i`-th instance only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub slots: Vec<Vec<Node>>,
+    /// Per-instance unmatched trailers. Only non-empty slots are stored; each
+    /// entry records the original instance index it belongs to.
+    #[serde(default, skip_serializing_if = "SameCpuSlots::is_empty")]
+    pub slots: SameCpuSlots,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SameCpuSlots {
+    entries: Vec<SameCpuSlot>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SameCpuSlot {
+    pub instance_index: u32,
+    pub children: Vec<Node>,
+}
+
+impl SameCpuSlots {
+    pub fn from_dense(slots: Vec<Vec<Node>>) -> Self {
+        let mut entries = Vec::new();
+        for (idx, children) in slots.into_iter().enumerate() {
+            if children.is_empty() {
+                continue;
+            }
+            entries.push(SameCpuSlot {
+                instance_index: idx as u32,
+                children,
+            });
+        }
+        entries.shrink_to_fit();
+        Self { entries }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.entries.capacity()
+    }
+
+    pub fn entries(&self) -> &[SameCpuSlot] {
+        &self.entries
+    }
+
+    pub fn entries_mut(&mut self) -> &mut [SameCpuSlot] {
+        &mut self.entries
+    }
+
+    pub fn child_count(&self) -> usize {
+        self.entries.iter().map(|slot| slot.children.len()).sum()
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        for slot in &mut self.entries {
+            slot.children.shrink_to_fit();
+        }
+        self.entries.shrink_to_fit();
+    }
+}
+
+impl From<Vec<Vec<Node>>> for SameCpuSlots {
+    fn from(slots: Vec<Vec<Node>>) -> Self {
+        Self::from_dense(slots)
+    }
+}
+
+impl Serialize for SameCpuSlot {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut tuple = serializer.serialize_tuple(2)?;
+        tuple.serialize_element(&self.instance_index)?;
+        tuple.serialize_element(&self.children)?;
+        tuple.end()
+    }
+}
+
+impl Serialize for SameCpuSlots {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.entries.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SameCpuSlots {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum SlotWire {
+            Sparse(u32, Vec<Node>),
+            SparseMap {
+                instance_index: u32,
+                children: Vec<Node>,
+            },
+            Dense(Vec<Node>),
+        }
+
+        let raw = Vec::<SlotWire>::deserialize(deserializer)?;
+        let mut entries = Vec::new();
+        for (idx, slot) in raw.into_iter().enumerate() {
+            let (instance_index, children) = match slot {
+                SlotWire::Sparse(instance_index, children) => (instance_index, children),
+                SlotWire::SparseMap {
+                    instance_index,
+                    children,
+                } => (instance_index, children),
+                SlotWire::Dense(children) => (idx as u32, children),
+            };
+            if children.is_empty() {
+                continue;
+            }
+            entries.push(SameCpuSlot {
+                instance_index,
+                children,
+            });
+        }
+        entries.shrink_to_fit();
+        Ok(Self { entries })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,8 +224,8 @@ impl Node {
             }
             Node::SameCpu(n) => {
                 out.extend(n.children.iter());
-                for slot in &n.slots {
-                    out.extend(slot.iter());
+                for slot in n.slots.entries() {
+                    out.extend(slot.children.iter());
                 }
             }
             Node::Gpu(_) | Node::KernelLaunch(_) | Node::KernelsLaunch(_) => {}

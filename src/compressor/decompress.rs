@@ -69,28 +69,44 @@ fn visit(
     match node {
         Node::Root { children } => {
             for c in children {
-                visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+                visit(
+                    c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace,
+                );
             }
         }
         Node::Cpu(n) => {
-            emit_cpu(rank, cpu_pid, cpu_tid, cpu_phase, n.template, n.instance, templates, start_ts, trace);
+            emit_cpu(
+                rank, cpu_pid, cpu_tid, cpu_phase, n.template, n.instance, templates, start_ts,
+                trace,
+            );
             for c in &n.children {
-                visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+                visit(
+                    c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace,
+                );
             }
             for c in &n.slots {
-                visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+                visit(
+                    c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace,
+                );
             }
         }
         Node::SameCpu(n) => {
             for inst in &n.instances {
-                emit_cpu(rank, cpu_pid, cpu_tid, cpu_phase, n.template, *inst, templates, start_ts, trace);
+                emit_cpu(
+                    rank, cpu_pid, cpu_tid, cpu_phase, n.template, *inst, templates, start_ts,
+                    trace,
+                );
             }
             for c in &n.children {
-                visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+                visit(
+                    c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace,
+                );
             }
-            for slot in &n.slots {
-                for c in slot {
-                    visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+            for slot in n.slots.entries() {
+                for c in &slot.children {
+                    visit(
+                        c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace,
+                    );
                 }
             }
         }
@@ -102,7 +118,14 @@ fn visit(
         Node::KernelLaunch(n) => {
             // CPU launch event is emitted by the enclosing CpuNode/SameCpuNode;
             // KernelLaunch is just a GPU pointer in the call tree.
-            emit_gpu(rank, n.gpu_template, n.gpu_instance, templates, start_ts, trace);
+            emit_gpu(
+                rank,
+                n.gpu_template,
+                n.gpu_instance,
+                templates,
+                start_ts,
+                trace,
+            );
         }
         Node::KernelsLaunch(n) => {
             for (tmpl_id, inst) in n.gpu_templates.iter().zip(n.gpu_instances.iter()) {
@@ -151,7 +174,14 @@ fn emit_gpu(
     push(trace, rank, pid, &tid, phase, event);
 }
 
-fn build_cpu_event(tmpl: &MergeEvent, i: usize, pid: i64, tid: &str, phase: Phase, _start_ts: i64) -> Event {
+fn build_cpu_event(
+    tmpl: &MergeEvent,
+    i: usize,
+    pid: i64,
+    tid: &str,
+    phase: Phase,
+    _start_ts: i64,
+) -> Event {
     let nums = decode_name_nums(&tmpl.name_nums, i);
     let name = utils::restore_digits(&tmpl.name_pattern, &nums);
     // ts in CompressedTrace is already in per-rank relative form (matches the
@@ -175,7 +205,14 @@ fn build_cpu_event(tmpl: &MergeEvent, i: usize, pid: i64, tid: &str, phase: Phas
     }
 }
 
-fn build_gpu_event(tmpl: &MergeKernelEvent, i: usize, pid: i64, tid: &str, phase: Phase, _start_ts: i64) -> Event {
+fn build_gpu_event(
+    tmpl: &MergeKernelEvent,
+    i: usize,
+    pid: i64,
+    tid: &str,
+    phase: Phase,
+    _start_ts: i64,
+) -> Event {
     let nums = decode_name_nums(&tmpl.name_nums, i);
     let name = utils::restore_digits(&tmpl.name_pattern, &nums);
     let ts = tmpl.ts.get(i).unwrap_or(0);
@@ -219,7 +256,10 @@ fn decode_args(arg_keys: &[String], args_columns: &[ArgColumn], i: usize) -> Opt
 
 fn push(trace: &mut Trace, rank: &str, pid: i64, tid: &str, phase: Phase, event: Event) {
     use indexmap::IndexMap;
-    let rank_streams = trace.ranks.entry(rank.to_string()).or_insert_with(IndexMap::new);
+    let rank_streams = trace
+        .ranks
+        .entry(rank.to_string())
+        .or_insert_with(IndexMap::new);
     let tid_layer = rank_streams
         .entry(pid)
         .or_default()

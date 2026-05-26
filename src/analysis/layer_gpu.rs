@@ -95,7 +95,10 @@ impl AnalysisTask for LayerKernelHotspot {
         let mut tally: AHashMap<(String, String), KernelAgg> = AHashMap::new();
         let raw = collect_raw_layer_gpu(trace);
         for item in &raw.items {
-            let key = (item.layer.clone(), crate::utils::normalize_name(&item.gpu.name));
+            let key = (
+                item.layer.clone(),
+                crate::utils::normalize_name(&item.gpu.name),
+            );
             let entry = tally.entry(key).or_default();
             entry.count += 1;
             entry.total_dur_us += item.gpu.dur;
@@ -332,7 +335,10 @@ fn walk_layer_subtrees(compressed: &CompressedTrace, mut f: impl FnMut(&str, Gpu
     walk_rank_layer_subtrees(compressed, |_rank, layer, gpu| f(layer, gpu));
 }
 
-fn walk_rank_layer_subtrees(compressed: &CompressedTrace, mut f: impl FnMut(&str, &str, GpuKernel)) {
+fn walk_rank_layer_subtrees(
+    compressed: &CompressedTrace,
+    mut f: impl FnMut(&str, &str, GpuKernel),
+) {
     for (rank, processes) in &compressed.ranks {
         for threads in processes.values() {
             for phases in threads.values() {
@@ -376,7 +382,11 @@ fn walk_node_for_layers(
                     .enumerate()
                     .map(|(idx, inst)| {
                         cpu_instance_layer(compressed, n.template, *inst)
-                            .or_else(|| repeated_scope.as_ref().map(|scope| format!("{scope}#{idx}")))
+                            .or_else(|| {
+                                repeated_scope
+                                    .as_ref()
+                                    .map(|scope| format!("{scope}#{idx}"))
+                            })
                             .or_else(|| active_layer.at(idx))
                     })
                     .collect(),
@@ -385,9 +395,10 @@ fn walk_node_for_layers(
             for child in &n.children {
                 walk_node_for_layers(compressed, rank, child, next_layer.clone(), f);
             }
-            for (idx, slot) in n.slots.iter().enumerate() {
-                let slot_layer = ActiveLayer::from_option(next_layer.at(idx));
-                for child in slot {
+            for slot in n.slots.entries() {
+                let slot_layer =
+                    ActiveLayer::from_option(next_layer.at(slot.instance_index as usize));
+                for child in &slot.children {
                     walk_node_for_layers(compressed, rank, child, slot_layer.clone(), f);
                 }
             }
@@ -426,9 +437,8 @@ fn walk_node_for_layers(
             }
         }
         Node::KernelLaunch(n) => {
-            if let Some(layer) =
-                cpu_instance_layer(compressed, n.cpu_template, n.cpu_instance)
-                    .or_else(|| active_layer.scalar())
+            if let Some(layer) = cpu_instance_layer(compressed, n.cpu_template, n.cpu_instance)
+                .or_else(|| active_layer.scalar())
             {
                 f(
                     rank,
@@ -448,9 +458,8 @@ fn walk_node_for_layers(
                 .zip(n.gpu_instances.iter())
                 .enumerate()
             {
-                if let Some(layer) =
-                    cpu_instance_layer(compressed, n.cpu_template, *cpu_inst)
-                        .or_else(|| active_layer.at(idx))
+                if let Some(layer) = cpu_instance_layer(compressed, n.cpu_template, *cpu_inst)
+                    .or_else(|| active_layer.at(idx))
                 {
                     f(
                         rank,
@@ -500,7 +509,11 @@ fn raw_layer_from_name(name: &str) -> Option<String> {
     })
 }
 
-fn repeated_scope_layers(compressed: &CompressedTrace, tmpl_id: TemplateId, instances: usize) -> Option<String> {
+fn repeated_scope_layers(
+    compressed: &CompressedTrace,
+    tmpl_id: TemplateId,
+    instances: usize,
+) -> Option<String> {
     if !(REPEATED_SCOPE_MIN_INSTANCES..=REPEATED_SCOPE_MAX_INSTANCES).contains(&instances) {
         return None;
     }
@@ -734,7 +747,10 @@ fn rank_balance_json(
     ranks.sort_by(|a, b| rank_cmp(a, b));
     ranks.dedup();
 
-    let mut layers: Vec<String> = by_rank_layer.keys().map(|(_, layer)| layer.clone()).collect();
+    let mut layers: Vec<String> = by_rank_layer
+        .keys()
+        .map(|(_, layer)| layer.clone())
+        .collect();
     layers.sort();
     layers.dedup();
 

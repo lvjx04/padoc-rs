@@ -47,9 +47,9 @@ impl Trace {
         self.ranks.iter().flat_map(|(rank, processes)| {
             processes.iter().flat_map(move |(pid, threads)| {
                 threads.iter().flat_map(move |(tid, phases)| {
-                    phases
-                        .iter()
-                        .map(move |(ph, events)| (rank.as_str(), *pid, tid.as_str(), *ph, events.as_slice()))
+                    phases.iter().map(move |(ph, events)| {
+                        (rank.as_str(), *pid, tid.as_str(), *ph, events.as_slice())
+                    })
                 })
             })
         })
@@ -57,7 +57,9 @@ impl Trace {
 
     /// Total event count.  O(streams) (events are cheap to count).
     pub fn event_count(&self) -> usize {
-        self.iter_streams().map(|(_, _, _, _, events)| events.len()).sum()
+        self.iter_streams()
+            .map(|(_, _, _, _, events)| events.len())
+            .sum()
     }
 
     /// Load a single chrome-trace JSON file.
@@ -157,8 +159,8 @@ pub fn list_trace_files(dir: &Path) -> Vec<PathBuf> {
 /// Parse a single chrome-trace JSON payload.  Implementation is
 /// `simd-json`-based for big files.
 fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Trace> {
-    use simd_json::OwnedValue as Value;
     use simd_json::prelude::*;
+    use simd_json::OwnedValue as Value;
 
     let root: Value = simd_json::to_owned_value(&mut bytes)?;
     let root_obj = match root {
@@ -185,7 +187,11 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
 
     let trace_events = match root_obj.get("traceEvents") {
         Some(Value::Array(arr)) => arr,
-        _ => return Err(crate::Error::InvalidTrace("missing traceEvents array".into())),
+        _ => {
+            return Err(crate::Error::InvalidTrace(
+                "missing traceEvents array".into(),
+            ))
+        }
     };
 
     let mut streams: StreamMap = IndexMap::new();
@@ -202,10 +208,18 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
             _ => continue,
         };
 
-        let ph = obj.get("ph").and_then(|v| v.as_str()).map(|s| s.as_bytes()[0]).unwrap_or(b'X');
+        let ph = obj
+            .get("ph")
+            .and_then(|v| v.as_str())
+            .map(|s| s.as_bytes()[0])
+            .unwrap_or(b'X');
         let phase = Phase(ph);
 
-        let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
 
         // pid/tid can be process-label strings (e.g. "GPU 0") in some
         // chrome-trace dialects; truncate floats and tolerate strings.
@@ -217,7 +231,11 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
                     .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
             })
             .unwrap_or(0);
-        let raw_tid: String = match obj.get("tid").cloned().unwrap_or(Value::Static(simd_json::StaticNode::Null)) {
+        let raw_tid: String = match obj
+            .get("tid")
+            .cloned()
+            .unwrap_or(Value::Static(simd_json::StaticNode::Null))
+        {
             Value::String(s) => s.into(),
             Value::Static(simd_json::StaticNode::I64(n)) => n.to_string(),
             Value::Static(simd_json::StaticNode::U64(n)) => n.to_string(),
@@ -225,7 +243,11 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
         };
 
         if phase == Phase::METADATA {
-            let value = simd_to_serde(obj.get("args").cloned().unwrap_or(Value::Static(simd_json::StaticNode::Null)));
+            let value = simd_to_serde(
+                obj.get("args")
+                    .cloned()
+                    .unwrap_or(Value::Static(simd_json::StaticNode::Null)),
+            );
             metadata.insert(name, value);
             continue;
         }
@@ -235,7 +257,11 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
         //   * else if cat == "gpu_user_annotation",                  -> tid := "stream <tid>"
         //   * else leave as-is.
         let stream_in_args = obj.get("args").and_then(|args| match args {
-            Value::Object(o) => o.get("stream").and_then(|v| v.as_i64().map(|n| n.to_string()).or_else(|| v.as_str().map(str::to_owned))),
+            Value::Object(o) => o.get("stream").and_then(|v| {
+                v.as_i64()
+                    .map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(str::to_owned))
+            }),
             _ => None,
         });
         let cat = obj.get("cat").and_then(|v| v.as_str()).map(str::to_owned);
@@ -249,7 +275,12 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
         };
 
         let event = build_event(obj, name, pid, tid.clone(), phase);
-        staging.push(StagingEvent { event, pid, tid, phase });
+        staging.push(StagingEvent {
+            event,
+            pid,
+            tid,
+            phase,
+        });
     }
 
     // Per-rank ts origin: subtract the minimum ts so the column is small.
@@ -291,8 +322,8 @@ fn build_event(
     tid: String,
     phase: Phase,
 ) -> Event {
-    use simd_json::OwnedValue as Value;
     use simd_json::prelude::*;
+    use simd_json::OwnedValue as Value;
     // simd-json's `.as_i64()` returns None for f64 numbers; chrome-traces
     // emitted by Kineto+ROCm write `ts`/`dur` as floats.  Falling through
     // to `unwrap_or(0)` would silently zero out every such event's
@@ -378,7 +409,11 @@ fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Tr
             None => continue,
         };
 
-        let ph = obj.get("ph").and_then(|v| v.as_str()).map(|s| s.as_bytes()[0]).unwrap_or(b'X');
+        let ph = obj
+            .get("ph")
+            .and_then(|v| v.as_str())
+            .map(|s| s.as_bytes()[0])
+            .unwrap_or(b'X');
         let phase = Phase(ph);
         let name = obj
             .get("name")
@@ -398,13 +433,16 @@ fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Tr
             continue;
         }
 
-        let stream_in_args = obj.get("args").and_then(|args| args.as_object()).and_then(|a| {
-            a.get("stream").and_then(|v| {
-                v.as_i64()
-                    .map(|n| n.to_string())
-                    .or_else(|| v.as_str().map(str::to_owned))
-            })
-        });
+        let stream_in_args = obj
+            .get("args")
+            .and_then(|args| args.as_object())
+            .and_then(|a| {
+                a.get("stream").and_then(|v| {
+                    v.as_i64()
+                        .map(|n| n.to_string())
+                        .or_else(|| v.as_str().map(str::to_owned))
+                })
+            });
         let cat = obj.get("cat").and_then(|v| v.as_str()).map(str::to_owned);
 
         let tid = if let Some(stream) = stream_in_args {
@@ -416,7 +454,12 @@ fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Tr
         };
 
         let event = build_event_serde(obj, name, pid, tid.clone(), phase);
-        staging.push(StagingEvent { event, pid, tid, phase });
+        staging.push(StagingEvent {
+            event,
+            pid,
+            tid,
+            phase,
+        });
     }
 
     let start_ts = staging.iter().map(|s| s.event.ts).min().unwrap_or(0);
@@ -469,7 +512,19 @@ fn build_event_serde(
         _ => None,
     });
 
-    Event { name, ts, dur, cat, ph: phase, pid, tid, args, id, bp, s }
+    Event {
+        name,
+        ts,
+        dur,
+        cat,
+        ph: phase,
+        pid,
+        tid,
+        args,
+        id,
+        bp,
+        s,
+    }
 }
 
 fn simd_to_serde(v: simd_json::OwnedValue) -> serde_json::Value {
@@ -602,8 +657,28 @@ impl CompressedTrace {
     /// Decode the byte blob produced by [`Self::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let raw = zstd::stream::decode_all(bytes)?;
-        let trace: CompressedTrace = rmp_serde::from_slice(&raw)?;
+        let mut trace: CompressedTrace = rmp_serde::from_slice(&raw)?;
+        drop(raw);
+        trace.shrink_to_fit();
         Ok(trace)
+    }
+
+    /// Drop excess capacity left by serde's growth strategy.
+    ///
+    /// This targets the resident in-memory representation after loading an
+    /// artifact.  We intentionally avoid walking the node tree here: in real
+    /// artifacts those vectors are already exact-sized, while the numeric and
+    /// arg columns can carry multi-GiB capacity slack after msgpack decode.
+    pub fn shrink_to_fit(&mut self) {
+        for template in &mut self.templates {
+            template.shrink_to_fit();
+        }
+        self.templates.shrink_to_fit();
+        self.metadata.shrink_to_fit();
+        for value in self.metadata.values_mut() {
+            value.shrink_to_fit();
+        }
+        self.start_timestamp.shrink_to_fit();
     }
 }
 

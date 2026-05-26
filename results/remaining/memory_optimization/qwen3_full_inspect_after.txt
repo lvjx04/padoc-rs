@@ -1,0 +1,27 @@
+on_disk_bytes	285455164
+templates	5498
+cpu_templates	5414
+gpu_templates	84
+cpu_instances	30961798
+gpu_instances	2851776
+nodes	11248516
+node_breakdown	root=312399 cpu=5208093 same_cpu=3808018 gpu=512 kernel_launch=1461196 kernels_launch=458298
+same_cpu_slots	dense_rows=25753705 sparse_entries=3062367 children=3859003
+num_column_breakdown	constant=4880 i32=6194 i64=0
+cpu_ts_bytes	123864640	0.115 GiB
+cpu_dur_bytes	91954704	0.086 GiB
+cpu_id_bytes	0	0.000 GiB
+gpu_ts_bytes	11407112	0.011 GiB
+gpu_dur_bytes	11407112	0.011 GiB
+gpu_pid_bytes	11406624	0.011 GiB
+gpu_ph_bytes	420	0.000 GiB
+gpu_stream_bytes	35790048	0.033 GiB
+name_num_vecs_bytes	22119880	0.021 GiB
+name_num_payload_bytes	274548	0.000 GiB
+node_vec_storage_bytes	1087376752	1.013 GiB
+node_u32_vec_storage_bytes	119701780	0.111 GiB
+arg_value_count	52536565
+arg_vec_storage_bytes	366201972	0.341 GiB
+arg_payload_bytes	157549679	0.147 GiB
+string_payload_other_bytes	324433	0.000 GiB
+accounted_selected_total_bytes	2039379704	1.899 GiB

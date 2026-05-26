@@ -137,7 +137,9 @@ fn group_similar(compressor: &TemplateCompressor, children: Vec<Node>) -> Vec<No
 
 fn build_same_cpu(group: Vec<Node>, config: &CompressorConfig) -> Node {
     if group.is_empty() {
-        return Node::Root { children: Vec::new() };
+        return Node::Root {
+            children: Vec::new(),
+        };
     }
 
     // group_similar only feeds us pure-Cpu buckets, so every member is a
@@ -169,7 +171,7 @@ fn build_same_cpu(group: Vec<Node>, config: &CompressorConfig) -> Node {
         template,
         instances,
         children,
-        slots,
+        slots: slots.into(),
     })
 }
 
@@ -247,7 +249,13 @@ fn anchor_match(child_lists: &[Vec<Node>]) -> (Vec<Node>, Vec<Vec<Node>>) {
         let trailers: Vec<Node> = list
             .iter()
             .enumerate()
-            .filter_map(|(j, n)| if positions.contains(&j) { None } else { Some(n.clone()) })
+            .filter_map(|(j, n)| {
+                if positions.contains(&j) {
+                    None
+                } else {
+                    Some(n.clone())
+                }
+            })
             .collect();
         slots.push(trailers);
     }
@@ -271,7 +279,9 @@ fn anchor_match(child_lists: &[Vec<Node>]) -> (Vec<Node>, Vec<Vec<Node>>) {
 /// a `Root` wrapper — slightly worse compression but bit-exact decoding.
 fn merge_anchor_group(group: Vec<Node>) -> Node {
     if group.is_empty() {
-        return Node::Root { children: Vec::new() };
+        return Node::Root {
+            children: Vec::new(),
+        };
     }
     if group.len() == 1 {
         return group.into_iter().next().unwrap();
@@ -325,13 +335,17 @@ fn merge_anchor_group(group: Vec<Node>) -> Node {
             }
         }
     }
-    debug_assert_eq!(instances.len(), child_lists.len(), "SameCpu invariant broken");
+    debug_assert_eq!(
+        instances.len(),
+        child_lists.len(),
+        "SameCpu invariant broken"
+    );
     let (children, slots) = anchor_match(&child_lists);
     Node::SameCpu(SameCpuNode {
         template,
         instances,
         children,
-        slots,
+        slots: slots.into(),
     })
 }
 

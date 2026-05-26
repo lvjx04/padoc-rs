@@ -67,10 +67,7 @@ pub struct RankShard {
 /// The returned trace is bit-equivalent (modulo template ordering) to the
 /// output of running [`TemplateCompressor::compress`] on the union of all
 /// the shards' input ranks.
-pub fn merge_shards(
-    config: &CompressorConfig,
-    shards: Vec<RankShard>,
-) -> Result<CompressedTrace> {
+pub fn merge_shards(config: &CompressorConfig, shards: Vec<RankShard>) -> Result<CompressedTrace> {
     // -----------------------------------------------------------------------
     // Phase 1 (sequential): dedup templates into a global table.
     //
@@ -318,8 +315,8 @@ fn rewrite_node(node: &mut Node, remap: &[(TemplateId, u32)]) {
             for c in &mut n.children {
                 rewrite_node(c, remap);
             }
-            for slot in &mut n.slots {
-                for c in slot {
+            for slot in n.slots.entries_mut() {
+                for c in &mut slot.children {
                     rewrite_node(c, remap);
                 }
             }

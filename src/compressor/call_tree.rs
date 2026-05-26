@@ -21,7 +21,8 @@ use std::collections::BTreeMap;
 use super::core::TemplateCompressor;
 use crate::event::{Event, Phase};
 use crate::node::{
-    CpuNode, GpuNode, InstanceId, KernelLaunchNode, KernelsLaunchNode, Node, SameCpuNode, TemplateId,
+    CpuNode, GpuNode, InstanceId, KernelLaunchNode, KernelsLaunchNode, Node, SameCpuNode,
+    TemplateId,
 };
 use crate::trace::StreamMap;
 
@@ -174,8 +175,8 @@ fn build_cpu_tree(
 
     let mut roots: Vec<Node> = Vec::new();
     let mut stack: Vec<(i64, i64, usize)> = Vec::new(); // (ts, end_ts, idx_in_path)
-    // For each level on the stack we need a place to push children of the
-    // currently-open node.  We track that with `path` parallel to `stack`.
+                                                        // For each level on the stack we need a place to push children of the
+                                                        // currently-open node.  We track that with `path` parallel to `stack`.
     let mut path: Vec<Node> = Vec::new();
 
     for ev in sorted {
@@ -195,7 +196,8 @@ fn build_cpu_tree(
         }
 
         // Build this event's node.  Pair with GPU kernel if there's a correlation.
-        let new_node = make_cpu_or_kernel_node(compressor, ev, gpu_events, paired_corrs, consumed_gpu);
+        let new_node =
+            make_cpu_or_kernel_node(compressor, ev, gpu_events, paired_corrs, consumed_gpu);
         path.push(new_node);
         stack.push((ts, end_ts, path.len() - 1));
     }
@@ -310,7 +312,10 @@ fn build_gpu_tree(
         templates.push(tid_);
         instances.push(inst);
     }
-    Node::Gpu(GpuNode { templates, instances })
+    Node::Gpu(GpuNode {
+        templates,
+        instances,
+    })
 }
 
 /// Identifier of a single GPU event within one rank.  Used to mark events
@@ -343,7 +348,7 @@ pub(crate) fn _samecpu_marker() -> Node {
         template: 0,
         instances: Vec::new(),
         children: Vec::new(),
-        slots: Vec::new(),
+        slots: Vec::new().into(),
     })
 }
 

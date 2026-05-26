@@ -24,7 +24,9 @@ struct RankIntervals {
 }
 
 impl AnalysisTask for ComputeCommOverlap {
-    fn name(&self) -> &str { "compute_comm_overlap" }
+    fn name(&self) -> &str {
+        "compute_comm_overlap"
+    }
 
     fn run_raw(&self, trace: &Trace) -> Result<Value> {
         let mut by_rank: AHashMap<String, RankIntervals> = AHashMap::new();
@@ -49,7 +51,9 @@ impl AnalysisTask for ComputeCommOverlap {
         Ok(to_json(by_rank))
     }
 
-    fn supports_in_situ(&self) -> bool { true }
+    fn supports_in_situ(&self) -> bool {
+        true
+    }
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
         let start = std::time::Instant::now();
@@ -61,7 +65,8 @@ impl AnalysisTask for ComputeCommOverlap {
                 for (_tid, phases) in threads {
                     for (_ph, root) in phases {
                         walk_gpu_instances(root, &mut |tmpl_id, inst_id| {
-                            let Some(Template::Gpu(g)) = compressed.templates.get(tmpl_id as usize) else {
+                            let Some(Template::Gpu(g)) = compressed.templates.get(tmpl_id as usize)
+                            else {
                                 return;
                             };
                             if g.cat.as_deref() != Some("kernel") {
@@ -87,10 +92,13 @@ impl AnalysisTask for ComputeCommOverlap {
 
         let start = std::time::Instant::now();
         let result = to_json(by_rank);
-        Ok(profiled_result(result, vec![
-            ("rank_interval_collect", collect_secs),
-            ("interval_merge_and_json", elapsed_secs(start)),
-        ]))
+        Ok(profiled_result(
+            result,
+            vec![
+                ("rank_interval_collect", collect_secs),
+                ("interval_merge_and_json", elapsed_secs(start)),
+            ],
+        ))
     }
 }
 
@@ -117,8 +125,8 @@ fn walk_gpu_instances(
             for child in &n.children {
                 walk_gpu_instances(child, f);
             }
-            for slot in &n.slots {
-                for child in slot {
+            for slot in n.slots.entries() {
+                for child in &slot.children {
                     walk_gpu_instances(child, f);
                 }
             }

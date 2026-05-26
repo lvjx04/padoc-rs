@@ -164,6 +164,14 @@ impl NumColumn {
         }
     }
 
+    pub fn shrink_to_fit(&mut self) {
+        match self {
+            NumColumn::I32(v) => v.shrink_to_fit(),
+            NumColumn::I64(v) => v.shrink_to_fit(),
+            NumColumn::Empty | NumColumn::Constant { .. } => {}
+        }
+    }
+
     /// Append one value (build path).  Forces the column into `I64` storage —
     /// finalisation downcasts later.
     pub fn push(&mut self, v: i64) {
@@ -174,7 +182,8 @@ impl NumColumn {
                 // Build path appends in I64 mode; compact variants only appear
                 // post-finalise.  Promote back to I64 to stay correct if ever
                 // hit.
-                let mut values: Vec<i64> = (0..self.len()).map(|i| self.get(i).unwrap_or(0)).collect();
+                let mut values: Vec<i64> =
+                    (0..self.len()).map(|i| self.get(i).unwrap_or(0)).collect();
                 values.push(v);
                 *self = NumColumn::I64(values);
             }
@@ -192,11 +201,14 @@ impl NumColumn {
             return;
         }
         // Promote both sides to I64 first; compactification happens at finalize.
-        let extra: Vec<i64> = (0..other.len()).map(|i| other.get(i).unwrap_or(0)).collect();
+        let extra: Vec<i64> = (0..other.len())
+            .map(|i| other.get(i).unwrap_or(0))
+            .collect();
         match self {
             NumColumn::I64(values) => values.extend(extra),
             _ => {
-                let mut values: Vec<i64> = (0..self.len()).map(|i| self.get(i).unwrap_or(0)).collect();
+                let mut values: Vec<i64> =
+                    (0..self.len()).map(|i| self.get(i).unwrap_or(0)).collect();
                 values.extend(extra);
                 *self = NumColumn::I64(values);
             }
@@ -318,13 +330,28 @@ impl StringColumn {
         }
     }
 
+    pub fn shrink_to_fit(&mut self) {
+        match self {
+            StringColumn::Constant { value, .. } => value.shrink_to_fit(),
+            StringColumn::PerInstance(v) => {
+                for value in v.iter_mut() {
+                    value.shrink_to_fit();
+                }
+                v.shrink_to_fit();
+            }
+            StringColumn::Empty => {}
+        }
+    }
+
     pub fn push(&mut self, v: String) {
         match self {
             StringColumn::Empty => *self = StringColumn::PerInstance(vec![v]),
             StringColumn::PerInstance(values) => values.push(v),
             StringColumn::Constant { len, value } => {
                 // Build-path: convert back to PerInstance.
-                let mut values: Vec<String> = std::iter::repeat(value.clone()).take(*len as usize).collect();
+                let mut values: Vec<String> = std::iter::repeat(value.clone())
+                    .take(*len as usize)
+                    .collect();
                 values.push(v);
                 *self = StringColumn::PerInstance(values);
             }
@@ -420,6 +447,12 @@ impl PhaseColumn {
                 }
             }
             PhaseColumn::PerInstance(v) => v.get(i).copied().map(Phase),
+        }
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        if let PhaseColumn::PerInstance(v) = self {
+            v.shrink_to_fit();
         }
     }
 
@@ -532,9 +565,9 @@ impl ArgColumn {
             ArgColumn::Constant(v) => Some(v.clone()),
             ArgColumn::I32(v) => v.get(i).map(|x| serde_json::Value::from(*x as i64)),
             ArgColumn::I64(v) => v.get(i).map(|x| serde_json::Value::from(*x)),
-            ArgColumn::F64(v) => v.get(i).and_then(|x| {
-                serde_json::Number::from_f64(*x).map(serde_json::Value::Number)
-            }),
+            ArgColumn::F64(v) => v
+                .get(i)
+                .and_then(|x| serde_json::Number::from_f64(*x).map(serde_json::Value::Number)),
             ArgColumn::Bool(v) => v.get(i).map(|x| serde_json::Value::Bool(*x != 0)),
             ArgColumn::Str(v) => v.get(i).cloned().map(serde_json::Value::String),
             ArgColumn::StrDict { dict, ids } => ids.get(i).and_then(|id| {
@@ -543,6 +576,35 @@ impl ArgColumn {
                     .map(serde_json::Value::String)
             }),
             ArgColumn::PerInstance(v) => v.get(i).cloned(),
+        }
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        match self {
+            ArgColumn::Constant(v) => shrink_arg_value(v),
+            ArgColumn::I32(v) => v.shrink_to_fit(),
+            ArgColumn::I64(v) => v.shrink_to_fit(),
+            ArgColumn::F64(v) => v.shrink_to_fit(),
+            ArgColumn::Bool(v) => v.shrink_to_fit(),
+            ArgColumn::Str(v) => {
+                for value in v.iter_mut() {
+                    value.shrink_to_fit();
+                }
+                v.shrink_to_fit();
+            }
+            ArgColumn::StrDict { dict, ids } => {
+                for value in dict.iter_mut() {
+                    value.shrink_to_fit();
+                }
+                dict.shrink_to_fit();
+                ids.shrink_to_fit();
+            }
+            ArgColumn::PerInstance(values) => {
+                for value in values.iter_mut() {
+                    shrink_arg_value(value);
+                }
+                values.shrink_to_fit();
+            }
         }
     }
 
@@ -643,10 +705,7 @@ impl ArgColumn {
             return;
         }
         if all_float {
-            let floats: Vec<f64> = values
-                .iter()
-                .map(|v| v.as_f64().unwrap_or(0.0))
-                .collect();
+            let floats: Vec<f64> = values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
             *self = ArgColumn::F64(floats);
             return;
         }
@@ -683,6 +742,24 @@ impl ArgColumn {
         }
         // Heterogeneous — keep as PerInstance but the existing storage already
         // represents that, so nothing to do.
+    }
+}
+
+fn shrink_arg_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => s.shrink_to_fit(),
+        serde_json::Value::Array(values) => {
+            for value in values.iter_mut() {
+                shrink_arg_value(value);
+            }
+            values.shrink_to_fit();
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values_mut() {
+                shrink_arg_value(value);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
     }
 }
 
@@ -737,6 +814,20 @@ impl DigitColumn {
             DigitColumn::Strings(v) => v.get(i).cloned().unwrap_or_default(),
         }
     }
+
+    pub fn shrink_to_fit(&mut self) {
+        match self {
+            DigitColumn::Constant(s) => s.shrink_to_fit(),
+            DigitColumn::I32 { values, .. } => values.shrink_to_fit(),
+            DigitColumn::I64 { values, .. } => values.shrink_to_fit(),
+            DigitColumn::Strings(values) => {
+                for value in values.iter_mut() {
+                    value.shrink_to_fit();
+                }
+                values.shrink_to_fit();
+            }
+        }
+    }
 }
 
 fn format_int_with_width(v: i64, width: u8) -> String {
@@ -763,6 +854,29 @@ pub enum NameNums {
     /// Transposed form: outer Vec is one entry per `0` in `name_pattern`;
     /// each entry is a typed [`DigitColumn`].
     Columnar(Vec<DigitColumn>),
+}
+
+impl NameNums {
+    pub fn shrink_to_fit(&mut self) {
+        match self {
+            NameNums::Rows(rows) => {
+                for row in rows.iter_mut() {
+                    for value in row.iter_mut() {
+                        value.shrink_to_fit();
+                    }
+                    row.shrink_to_fit();
+                }
+                rows.shrink_to_fit();
+            }
+            NameNums::Columnar(cols) => {
+                for col in cols.iter_mut() {
+                    col.shrink_to_fit();
+                }
+                cols.shrink_to_fit();
+            }
+            NameNums::Empty => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +908,31 @@ pub struct MergeEvent {
 impl MergeEvent {
     pub fn instance_count(&self) -> usize {
         self.ts.len()
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        self.name_pattern.shrink_to_fit();
+        if let Some(value) = &mut self.cat {
+            value.shrink_to_fit();
+        }
+        if let Some(value) = &mut self.bp {
+            value.shrink_to_fit();
+        }
+        if let Some(value) = &mut self.s {
+            value.shrink_to_fit();
+        }
+        self.name_nums.shrink_to_fit();
+        for key in self.arg_keys.iter_mut() {
+            key.shrink_to_fit();
+        }
+        self.arg_keys.shrink_to_fit();
+        for col in self.args_columns.iter_mut() {
+            col.shrink_to_fit();
+        }
+        self.args_columns.shrink_to_fit();
+        self.ts.shrink_to_fit();
+        self.dur.shrink_to_fit();
+        self.id.shrink_to_fit();
     }
 }
 
@@ -827,6 +966,27 @@ impl MergeKernelEvent {
     pub fn instance_count(&self) -> usize {
         self.ts.len()
     }
+
+    pub fn shrink_to_fit(&mut self) {
+        self.name_pattern.shrink_to_fit();
+        if let Some(value) = &mut self.cat {
+            value.shrink_to_fit();
+        }
+        self.name_nums.shrink_to_fit();
+        for key in self.arg_keys.iter_mut() {
+            key.shrink_to_fit();
+        }
+        self.arg_keys.shrink_to_fit();
+        for col in self.args_columns.iter_mut() {
+            col.shrink_to_fit();
+        }
+        self.args_columns.shrink_to_fit();
+        self.ts.shrink_to_fit();
+        self.dur.shrink_to_fit();
+        self.pid.shrink_to_fit();
+        self.stream_tid.shrink_to_fit();
+        self.ph.shrink_to_fit();
+    }
 }
 
 /// Discriminated template.
@@ -842,6 +1002,13 @@ impl Template {
         match self {
             Template::Cpu(t) => t.instance_count(),
             Template::Gpu(t) => t.instance_count(),
+        }
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        match self {
+            Template::Cpu(t) => t.shrink_to_fit(),
+            Template::Gpu(t) => t.shrink_to_fit(),
         }
     }
 

@@ -1,4 +1,6 @@
-use padoc::event::{ArgColumn, DigitColumn, NameNums, NumColumn, PhaseColumn, StringColumn, Template};
+use padoc::event::{
+    ArgColumn, DigitColumn, NameNums, NumColumn, PhaseColumn, StringColumn, Template,
+};
 use padoc::node::Node;
 use padoc::storage_breakdown::measure_on_disk_regions;
 use padoc::trace::CompressedTrace;
@@ -34,6 +36,9 @@ struct Stats {
     gpu_nodes: usize,
     kernel_launch_nodes: usize,
     kernels_launch_nodes: usize,
+    same_cpu_dense_slot_rows: usize,
+    same_cpu_sparse_slot_entries: usize,
+    same_cpu_slot_children: usize,
     node_vec_bytes: usize,
     node_u32_vec_bytes: usize,
     constant_num_cols: usize,
@@ -68,7 +73,10 @@ fn main() -> anyhow::Result<()> {
     let artifact_bytes = std::fs::metadata(&path)?.len();
     eprintln!("loading {}", path.display());
     let trace = CompressedTrace::read_from_path(&path)?;
-    let mut s = Stats { templates: trace.templates.len(), ..Stats::default() };
+    let mut s = Stats {
+        templates: trace.templates.len(),
+        ..Stats::default()
+    };
 
     for t in &trace.templates {
         match t {
@@ -122,7 +130,16 @@ fn main() -> anyhow::Result<()> {
     println!("nodes\t{}", s.nodes);
     println!(
         "node_breakdown\troot={} cpu={} same_cpu={} gpu={} kernel_launch={} kernels_launch={}",
-        s.root_nodes, s.cpu_nodes, s.same_cpu_nodes, s.gpu_nodes, s.kernel_launch_nodes, s.kernels_launch_nodes
+        s.root_nodes,
+        s.cpu_nodes,
+        s.same_cpu_nodes,
+        s.gpu_nodes,
+        s.kernel_launch_nodes,
+        s.kernels_launch_nodes
+    );
+    println!(
+        "same_cpu_slots\tdense_rows={} sparse_entries={} children={}",
+        s.same_cpu_dense_slot_rows, s.same_cpu_sparse_slot_entries, s.same_cpu_slot_children
     );
     println!(
         "num_column_breakdown\tconstant={} i32={} i64={}",
@@ -209,8 +226,7 @@ fn string_column_bytes(col: &StringColumn) -> usize {
         StringColumn::Empty => 0,
         StringColumn::Constant { value, .. } => size_of::<String>() + value.capacity(),
         StringColumn::PerInstance(v) => {
-            v.capacity() * size_of::<String>()
-                + v.iter().map(|x| x.capacity()).sum::<usize>()
+            v.capacity() * size_of::<String>() + v.iter().map(|x| x.capacity()).sum::<usize>()
         }
     }
 }
@@ -314,15 +330,18 @@ fn count_node(node: &Node, s: &mut Stats) {
         }
         Node::SameCpu(n) => {
             s.same_cpu_nodes += 1;
+            s.same_cpu_dense_slot_rows += n.instances.len();
+            s.same_cpu_sparse_slot_entries += n.slots.len();
             s.node_u32_vec_bytes += n.instances.capacity() * size_of::<u32>();
             s.node_vec_bytes += n.children.capacity() * size_of::<Node>();
-            s.node_vec_bytes += n.slots.capacity() * size_of::<Vec<Node>>();
+            s.node_vec_bytes += n.slots.capacity() * size_of::<padoc::node::SameCpuSlot>();
             for child in &n.children {
                 count_node(child, s);
             }
-            for slot in &n.slots {
-                s.node_vec_bytes += slot.capacity() * size_of::<Node>();
-                for child in slot {
+            for slot in n.slots.entries() {
+                s.same_cpu_slot_children += slot.children.len();
+                s.node_vec_bytes += slot.children.capacity() * size_of::<Node>();
+                for child in &slot.children {
                     count_node(child, s);
                 }
             }
@@ -345,5 +364,8 @@ fn count_node(node: &Node, s: &mut Stats) {
 }
 
 fn print_bytes(label: &str, bytes: usize) {
-    println!("{label}_bytes\t{bytes}\t{:.3} GiB", bytes as f64 / 1024.0 / 1024.0 / 1024.0);
+    println!(
+        "{label}_bytes\t{bytes}\t{:.3} GiB",
+        bytes as f64 / 1024.0 / 1024.0 / 1024.0
+    );
 }

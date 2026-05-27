@@ -15,7 +15,6 @@
 //! * `rank_load_balance`           — per-rank GPU compute/communication balance.
 //! * `layer_kernel_hotspot`        — per-layer GPU kernel hotspots via CPU->GPU links.
 //! * `layer_compute_comm_overlap`  — per-layer compute/communication overlap.
-//! * `layer_rank_balance`          — per-layer, per-rank GPU load balance.
 
 use crate::trace::{CompressedTrace, Trace};
 use crate::Result;
@@ -31,7 +30,7 @@ mod parallel_group;
 mod stream_load_balance;
 
 pub use compute_comm_overlap::ComputeCommOverlap;
-pub use layer_gpu::{LayerComputeCommOverlap, LayerKernelHotspot, LayerRankBalance};
+pub use layer_gpu::{LayerComputeCommOverlap, LayerKernelHotspot};
 pub use layer_operator_balance::LayerOperatorBalance;
 pub use operator_hotspot::OperatorHotspot;
 pub use parallel_group::ParallelGroup;
@@ -80,6 +79,5 @@ pub fn registry() -> Vec<Box<dyn AnalysisTask>> {
         Box::new(ParallelGroup::default()),
         Box::new(LayerKernelHotspot::default()),
         Box::new(LayerComputeCommOverlap),
-        Box::new(LayerRankBalance),
     ]
 }

@@ -43,9 +43,6 @@ pub struct LayerKernelHotspot {
 #[derive(Default)]
 pub struct LayerComputeCommOverlap;
 
-#[derive(Default)]
-pub struct LayerRankBalance;
-
 #[derive(Default, Clone)]
 struct KernelAgg {
     count: u64,
@@ -58,12 +55,6 @@ struct IntervalAgg {
     comm: Vec<(i64, i64)>,
     compute_total_us: i64,
     comm_total_us: i64,
-}
-
-#[derive(Default, Clone)]
-struct RankLayerAgg {
-    compute_us: i64,
-    comm_us: i64,
 }
 
 #[derive(Clone, Copy)]
@@ -205,68 +196,6 @@ impl AnalysisTask for LayerComputeCommOverlap {
     }
 }
 
-impl AnalysisTask for LayerRankBalance {
-    fn name(&self) -> &str {
-        "layer_rank_balance"
-    }
-
-    fn run_raw(&self, trace: &Trace) -> Result<Value> {
-        let mut by_rank_layer: AHashMap<(String, String), RankLayerAgg> = AHashMap::new();
-        let raw = collect_raw_layer_gpu(trace);
-        for item in &raw.items {
-            let entry = by_rank_layer
-                .entry((item.rank.clone(), item.layer.clone()))
-                .or_default();
-            if is_nccl_kernel(&item.gpu.name) {
-                entry.comm_us += item.gpu.dur;
-            } else {
-                entry.compute_us += item.gpu.dur;
-            }
-        }
-        Ok(rank_balance_json(by_rank_layer, raw.coverage))
-    }
-
-    fn supports_in_situ(&self) -> bool {
-        true
-    }
-
-    fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
-        let start = std::time::Instant::now();
-        let mut by_rank_layer: AHashMap<(String, String), RankLayerAgg> = AHashMap::new();
-        let mut coverage = Coverage {
-            total_gpu_refs: total_gpu_kernel_refs(compressed),
-            ..Coverage::default()
-        };
-        walk_rank_layer_subtrees(compressed, |rank, layer, gpu| {
-            let Some(Template::Gpu(g)) = compressed.templates.get(gpu.tmpl_id as usize) else {
-                return;
-            };
-            if g.cat.as_deref() != Some("kernel") {
-                return;
-            }
-            let dur = g.dur.get(gpu.inst_id as usize).unwrap_or(0);
-            coverage.attributed_gpu_refs += 1;
-            let entry = by_rank_layer
-                .entry((rank.to_string(), layer.to_string()))
-                .or_default();
-            if is_nccl_kernel(&g.name_pattern) {
-                entry.comm_us += dur;
-            } else {
-                entry.compute_us += dur;
-            }
-        });
-        let collect_secs = elapsed_secs(start);
-        let start = std::time::Instant::now();
-        let result = rank_balance_json(by_rank_layer, coverage);
-        Ok(profiled_result(
-            result,
-            vec![
-                ("layer_rank_collect", collect_secs),
-                ("summary_json", elapsed_secs(start)),
-            ],
-        ))
-    }
-}
 
 #[derive(Default, Clone, Copy)]
 struct Coverage {
@@ -627,6 +556,8 @@ fn collect_cpu_stream_layer_gpu(
             .then_with(|| b.dur.unwrap_or(0).cmp(&a.dur.unwrap_or(0)))
     });
 
+    let repeated_scopes = raw_repeated_scope_occurrences(&sorted);
+    let mut repeated_seen: AHashMap<String, usize> = AHashMap::new();
     let mut stack: Vec<(i64, Option<String>)> = Vec::new();
     for ev in sorted {
         let dur = ev.dur.unwrap_or(0).max(0);
@@ -635,7 +566,8 @@ fn collect_cpu_stream_layer_gpu(
             stack.pop();
         }
         let inherited = stack.last().and_then(|(_, layer)| layer.clone());
-        let active_layer = raw_layer_from_name(&ev.name).or(inherited);
+        let repeated_layer = raw_repeated_layer(&ev.name, &repeated_scopes, &mut repeated_seen);
+        let active_layer = raw_layer_from_name(&ev.name).or(repeated_layer).or(inherited);
         if let (Some(layer), Some(corr)) = (active_layer.as_ref(), event_correlation(ev)) {
             if used_corrs.insert(corr) {
                 if let Some(gpu) = gpu_by_corr.get(&corr) {
@@ -652,6 +584,45 @@ fn collect_cpu_stream_layer_gpu(
             stack.push((end_ts, active_layer));
         }
     }
+}
+
+fn raw_repeated_scope_occurrences(events: &[&crate::event::Event]) -> ahash::AHashSet<String> {
+    let mut counts: AHashMap<String, usize> = AHashMap::new();
+    for ev in events {
+        if event_correlation(ev).is_none() {
+            continue;
+        }
+        let scope = layer_scope_name(&ev.name);
+        if is_low_value_repeated_scope(&scope) {
+            continue;
+        }
+        *counts.entry(scope).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter_map(|(scope, count)| {
+            if (REPEATED_SCOPE_MIN_INSTANCES..=REPEATED_SCOPE_MAX_INSTANCES).contains(&count) {
+                Some(scope)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn raw_repeated_layer(
+    name: &str,
+    repeated_scopes: &ahash::AHashSet<String>,
+    repeated_seen: &mut AHashMap<String, usize>,
+) -> Option<String> {
+    let scope = layer_scope_name(name);
+    if !repeated_scopes.contains(&scope) {
+        return None;
+    }
+    let idx = repeated_seen.entry(scope.clone()).or_default();
+    let layer = format!("{scope}#{idx}");
+    *idx += 1;
+    Some(layer)
 }
 
 fn event_correlation(event: &crate::event::Event) -> Option<i64> {
@@ -739,58 +710,6 @@ fn overlap_json(
     })
 }
 
-fn rank_balance_json(
-    by_rank_layer: AHashMap<(String, String), RankLayerAgg>,
-    coverage: Coverage,
-) -> Value {
-    let mut ranks: Vec<String> = by_rank_layer.keys().map(|(rank, _)| rank.clone()).collect();
-    ranks.sort_by(|a, b| rank_cmp(a, b));
-    ranks.dedup();
-
-    let mut layers: Vec<String> = by_rank_layer
-        .keys()
-        .map(|(_, layer)| layer.clone())
-        .collect();
-    layers.sort();
-    layers.dedup();
-
-    let mut rows: Vec<Value> = Vec::with_capacity(layers.len());
-    for layer in layers {
-        let mut compute_values = Vec::with_capacity(ranks.len());
-        let mut comm_values = Vec::with_capacity(ranks.len());
-        let mut total_values = Vec::with_capacity(ranks.len());
-        for rank in &ranks {
-            let agg = by_rank_layer
-                .get(&(rank.clone(), layer.clone()))
-                .cloned()
-                .unwrap_or_default();
-            compute_values.push(agg.compute_us);
-            comm_values.push(agg.comm_us);
-            total_values.push(agg.compute_us + agg.comm_us);
-        }
-        rows.push(serde_json::json!({
-            "layer": layer,
-            "compute": metric_summary(&compute_values),
-            "comm": metric_summary(&comm_values),
-            "total": metric_summary(&total_values),
-        }));
-    }
-    rows.sort_by(|a, b| {
-        let ai = a["total"]["imbalance_max_min_over_mean"]
-            .as_f64()
-            .unwrap_or(0.0);
-        let bi = b["total"]["imbalance_max_min_over_mean"]
-            .as_f64()
-            .unwrap_or(0.0);
-        bi.partial_cmp(&ai).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    serde_json::json!({
-        "coverage": coverage_json(coverage),
-        "rank_count": ranks.len(),
-        "rows": rows,
-    })
-}
-
 fn add_coverage(result: &mut Value, coverage: Coverage) {
     let rows = std::mem::take(result);
     *result = serde_json::json!({
@@ -821,43 +740,6 @@ fn total_gpu_kernel_refs(compressed: &CompressedTrace) -> u64 {
             _ => 0,
         })
         .sum()
-}
-
-fn metric_summary(values: &[i64]) -> Value {
-    if values.is_empty() {
-        return serde_json::json!({
-            "max_us": 0,
-            "min_us": 0,
-            "mean_us": 0.0,
-            "stddev_us": 0.0,
-            "cv": 0.0,
-            "imbalance_max_min_over_mean": 0.0,
-        });
-    }
-    let max_v = *values.iter().max().unwrap();
-    let min_v = *values.iter().min().unwrap();
-    let n = values.len() as f64;
-    let mean = values.iter().sum::<i64>() as f64 / n;
-    let var = values
-        .iter()
-        .map(|v| (*v as f64 - mean).powi(2))
-        .sum::<f64>()
-        / n;
-    let stddev = var.sqrt();
-    let cv = if mean > 0.0 { stddev / mean } else { 0.0 };
-    let imbalance = if mean > 0.0 {
-        (max_v - min_v) as f64 / mean
-    } else {
-        0.0
-    };
-    serde_json::json!({
-        "max_us": max_v,
-        "min_us": min_v,
-        "mean_us": mean,
-        "stddev_us": stddev,
-        "cv": cv,
-        "imbalance_max_min_over_mean": imbalance,
-    })
 }
 
 fn union_len(mut intervals: Vec<(i64, i64)>) -> i64 {

@@ -79,6 +79,5 @@ pub fn registry() -> Vec<Box<dyn AnalysisTask>> {
         Box::new(ParallelGroup::default()),
         Box::new(LayerKernelHotspot::default()),
         Box::new(LayerComputeCommOverlap),
-        Box::new(ComputeCommOverlap),
     ]
 }

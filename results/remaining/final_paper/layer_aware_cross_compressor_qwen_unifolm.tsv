@@ -1,0 +1,11 @@
+compressor	dataset	task	load_secs	analyze_secs	total_secs	artifact_bytes
+padoc	qwen3_full	layer_kernel_hotspot	13.3481	2.7905	16.1386	287737929
+padoc	qwen3_full	layer_compute_comm_overlap	12.5144	5.8553	18.3697	287737929
+padoc	qwen3_full	layer_rank_balance	13.2255	3.3810	16.6065	287737929
+padoc	unifolm_full	layer_kernel_hotspot	66.4422	10.2959	76.7381	774945231
+padoc	unifolm_full	layer_compute_comm_overlap	61.9195	9.7594	71.6789	774945231
+padoc	unifolm_full	layer_rank_balance	60.0628	9.5128	69.5756	774945231
+raw_json	qwen3_full	layer_kernel_hotspot	98.2145	5.7255	103.9400	5432657358
+raw_json	qwen3_full	layer_compute_comm_overlap	81.2864	6.1466	87.4330	5432657358
+raw_json	qwen3_full	layer_rank_balance	75.2039	5.2903	80.4942	5432657358
+raw_json	unifolm_full	layer_kernel_hotspot	382.7561	63.6992	446.4554	19333881397

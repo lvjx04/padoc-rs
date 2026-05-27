@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::analysis::kernel_class::is_nccl_kernel;
 use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
+use crate::arena::{ArenaNode, NodeArena, NodeId};
 use crate::event::Template;
 use crate::trace::{CompressedTrace, Trace};
 use crate::Result;
@@ -135,32 +136,47 @@ impl AnalysisTask for ComputeCommOverlap {
 
         // Collect GPU kernel events per rank from the tree, then sort and stream
         let mut rank_events: AHashMap<String, Vec<(i64, i64, bool)>> = AHashMap::new();
-        for (rank, processes) in &compressed.ranks {
-            let entry = rank_events.entry(rank.clone()).or_default();
-            for (_pid, threads) in processes {
-                for (_tid, phases) in threads {
-                    for (_ph, root) in phases {
-                        walk_gpu_instances(root, &mut |tmpl_id, inst_id| {
-                            let Some(Template::Gpu(g)) =
-                                compressed.templates.get(tmpl_id as usize)
-                            else {
-                                return;
-                            };
-                            if g.cat.as_deref() != Some("kernel") {
-                                return;
-                            }
-                            let ts = g.ts.get(inst_id as usize).unwrap_or(0);
-                            let dur = g.dur.get(inst_id as usize).unwrap_or(0);
-                            if dur <= 0 {
-                                return;
-                            }
-                            let is_comm = is_nccl_kernel(&g.name_pattern);
-                            entry.push((ts, dur, is_comm));
-                        });
+
+        if let Some(arenas) = &compressed.arenas {
+            for (rank, processes) in arenas {
+                let entry = rank_events.entry(rank.clone()).or_default();
+                for (_pid, threads) in processes {
+                    for (_tid, phases) in threads {
+                        for (_ph, (arena, root_id)) in phases {
+                            walk_gpu_instances_arena(arena, *root_id, compressed, entry);
+                        }
+                    }
+                }
+            }
+        } else {
+            for (rank, processes) in &compressed.ranks {
+                let entry = rank_events.entry(rank.clone()).or_default();
+                for (_pid, threads) in processes {
+                    for (_tid, phases) in threads {
+                        for (_ph, root) in phases {
+                            walk_gpu_instances_legacy(root, &mut |tmpl_id, inst_id| {
+                                let Some(Template::Gpu(g)) =
+                                    compressed.templates.get(tmpl_id as usize)
+                                else {
+                                    return;
+                                };
+                                if g.cat.as_deref() != Some("kernel") {
+                                    return;
+                                }
+                                let ts = g.ts.get(inst_id as usize).unwrap_or(0);
+                                let dur = g.dur.get(inst_id as usize).unwrap_or(0);
+                                if dur <= 0 {
+                                    return;
+                                }
+                                let is_comm = is_nccl_kernel(&g.name_pattern);
+                                entry.push((ts, dur, is_comm));
+                            });
+                        }
                     }
                 }
             }
         }
+
         let collect_secs = elapsed_secs(start);
 
         let start = std::time::Instant::now();
@@ -184,7 +200,7 @@ impl AnalysisTask for ComputeCommOverlap {
     }
 }
 
-fn walk_gpu_instances(
+fn walk_gpu_instances_legacy(
     node: &crate::node::Node,
     f: &mut impl FnMut(crate::node::TemplateId, crate::node::InstanceId),
 ) {
@@ -192,24 +208,24 @@ fn walk_gpu_instances(
     match node {
         Node::Root { children } => {
             for child in children {
-                walk_gpu_instances(child, f);
+                walk_gpu_instances_legacy(child, f);
             }
         }
         Node::Cpu(n) => {
             for child in &n.children {
-                walk_gpu_instances(child, f);
+                walk_gpu_instances_legacy(child, f);
             }
             for child in &n.slots {
-                walk_gpu_instances(child, f);
+                walk_gpu_instances_legacy(child, f);
             }
         }
         Node::SameCpu(n) => {
             for child in &n.children {
-                walk_gpu_instances(child, f);
+                walk_gpu_instances_legacy(child, f);
             }
             for slot in n.slots.entries() {
                 for child in &slot.children {
-                    walk_gpu_instances(child, f);
+                    walk_gpu_instances_legacy(child, f);
                 }
             }
         }
@@ -222,6 +238,87 @@ fn walk_gpu_instances(
         Node::KernelsLaunch(n) => {
             for (tmpl, inst) in n.gpu_templates.iter().zip(n.gpu_instances.iter()) {
                 f(*tmpl, *inst);
+            }
+        }
+    }
+}
+
+/// Arena-based version of `walk_gpu_instances_legacy`.
+fn walk_gpu_instances_arena(
+    arena: &NodeArena,
+    node_id: NodeId,
+    compressed: &CompressedTrace,
+    out: &mut Vec<(i64, i64, bool)>,
+) {
+    match arena.get(node_id) {
+        ArenaNode::Root { children } => {
+            for &child_id in arena.children(*children) {
+                walk_gpu_instances_arena(arena, child_id, compressed, out);
+            }
+        }
+        ArenaNode::Cpu { children, slots, .. } => {
+            let (children, slots) = (*children, *slots);
+            for &child_id in arena.children(children) {
+                walk_gpu_instances_arena(arena, child_id, compressed, out);
+            }
+            for &child_id in arena.children(slots) {
+                walk_gpu_instances_arena(arena, child_id, compressed, out);
+            }
+        }
+        ArenaNode::SameCpu { children, slots_start, slots_len, .. } => {
+            let (children, slots_start, slots_len) = (*children, *slots_start, *slots_len);
+            for &child_id in arena.children(children) {
+                walk_gpu_instances_arena(arena, child_id, compressed, out);
+            }
+            for slot in arena.slots_slice(slots_start, slots_len) {
+                for &child_id in arena.children(slot.children) {
+                    walk_gpu_instances_arena(arena, child_id, compressed, out);
+                }
+            }
+        }
+        ArenaNode::Gpu { refs_start, refs_len } => {
+            let (refs_start, refs_len) = (*refs_start, *refs_len);
+            for gpu_ref in arena.gpu_refs_slice(refs_start, refs_len) {
+                if let Some(Template::Gpu(g)) = compressed.templates.get(gpu_ref.template as usize) {
+                    if g.cat.as_deref() != Some("kernel") {
+                        continue;
+                    }
+                    let ts = g.ts.get(gpu_ref.instance as usize).unwrap_or(0);
+                    let dur = g.dur.get(gpu_ref.instance as usize).unwrap_or(0);
+                    if dur > 0 {
+                        let is_comm = is_nccl_kernel(&g.name_pattern);
+                        out.push((ts, dur, is_comm));
+                    }
+                }
+            }
+        }
+        ArenaNode::KernelLaunch { gpu_template, gpu_instance, .. } => {
+            let (gpu_template, gpu_instance) = (*gpu_template, *gpu_instance);
+            if let Some(Template::Gpu(g)) = compressed.templates.get(gpu_template as usize) {
+                if g.cat.as_deref() == Some("kernel") {
+                    let ts = g.ts.get(gpu_instance as usize).unwrap_or(0);
+                    let dur = g.dur.get(gpu_instance as usize).unwrap_or(0);
+                    if dur > 0 {
+                        let is_comm = is_nccl_kernel(&g.name_pattern);
+                        out.push((ts, dur, is_comm));
+                    }
+                }
+            }
+        }
+        ArenaNode::KernelsLaunch { refs_start, refs_len, .. } => {
+            let (refs_start, refs_len) = (*refs_start, *refs_len);
+            for r in arena.kernels_refs_slice(refs_start, refs_len) {
+                if let Some(Template::Gpu(g)) = compressed.templates.get(r.gpu_template as usize) {
+                    if g.cat.as_deref() != Some("kernel") {
+                        continue;
+                    }
+                    let ts = g.ts.get(r.gpu_instance as usize).unwrap_or(0);
+                    let dur = g.dur.get(r.gpu_instance as usize).unwrap_or(0);
+                    if dur > 0 {
+                        let is_comm = is_nccl_kernel(&g.name_pattern);
+                        out.push((ts, dur, is_comm));
+                    }
+                }
             }
         }
     }

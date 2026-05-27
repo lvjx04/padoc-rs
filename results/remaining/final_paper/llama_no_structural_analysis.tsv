@@ -1,0 +1,5 @@
+padoc	operator_hotspot	/mnt/treasure/ljx/artifacts_ablation_llama_full/llama_full.padoc_no_structural.zst	0.8880	158.3713	0.1011	159.3603	2757506834	55660300
+padoc	rank_load_balance	/mnt/treasure/ljx/artifacts_ablation_llama_full/llama_full.padoc_no_structural.zst	0.8880	158.3713	3.1635	162.4227	2757506834	55660300
+padoc	layer_kernel_hotspot	/mnt/treasure/ljx/artifacts_ablation_llama_full/llama_full.padoc_no_structural.zst	0.8880	158.3713	10.5530	169.8123	2757506834	55660300
+padoc	layer_compute_comm_overlap	/mnt/treasure/ljx/artifacts_ablation_llama_full/llama_full.padoc_no_structural.zst	0.8880	158.3713	11.1970	170.4562	2757506834	55660300
+padoc	layer_rank_balance	/mnt/treasure/ljx/artifacts_ablation_llama_full/llama_full.padoc_no_structural.zst	0.8880	158.3713	11.2005	170.4597	2757506834	55660300

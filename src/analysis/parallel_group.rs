@@ -31,6 +31,7 @@ use serde_json::Value;
 
 use crate::analysis::kernel_class::is_nccl_kernel;
 use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
+use crate::arena::{ArenaNode, NodeArena, NodeId};
 use crate::event::Template;
 use crate::node::{InstanceId, Node, TemplateId};
 use crate::trace::{CompressedTrace, Trace};
@@ -90,26 +91,53 @@ impl AnalysisTask for ParallelGroup {
         let start = std::time::Instant::now();
         let mut compute: AHashMap<String, i64> = AHashMap::new();
         let mut comm: AHashMap<String, i64> = AHashMap::new();
-        for (rank, processes) in &compressed.ranks {
-            for (_pid, threads) in processes {
-                for (_tid, phases) in threads {
-                    for (_ph, root) in phases {
-                        walk_kernels(root, &mut |tmpl_id, inst_id| {
-                            let c = class[tmpl_id as usize];
-                            if c == 0 {
-                                return;
-                            }
-                            let Template::Gpu(g) = &compressed.templates[tmpl_id as usize] else {
-                                return;
-                            };
-                            let dur = g.dur.get(inst_id as usize).unwrap_or(0);
-                            let bucket = if c == 1 { &mut compute } else { &mut comm };
-                            *bucket.entry(rank.clone()).or_insert(0) += dur;
-                        });
+
+        if let Some(arenas) = &compressed.arenas {
+            for (rank, processes) in arenas {
+                for (_pid, threads) in processes {
+                    for (_tid, phases) in threads {
+                        for (_ph, (arena, root_id)) in phases {
+                            walk_kernels_arena(arena, *root_id, &mut |tmpl_id, inst_id| {
+                                let c = class[tmpl_id as usize];
+                                if c == 0 {
+                                    return;
+                                }
+                                let Template::Gpu(g) = &compressed.templates[tmpl_id as usize]
+                                else {
+                                    return;
+                                };
+                                let dur = g.dur.get(inst_id as usize).unwrap_or(0);
+                                let bucket = if c == 1 { &mut compute } else { &mut comm };
+                                *bucket.entry(rank.clone()).or_insert(0) += dur;
+                            });
+                        }
+                    }
+                }
+            }
+        } else {
+            for (rank, processes) in &compressed.ranks {
+                for (_pid, threads) in processes {
+                    for (_tid, phases) in threads {
+                        for (_ph, root) in phases {
+                            walk_kernels_legacy(root, &mut |tmpl_id, inst_id| {
+                                let c = class[tmpl_id as usize];
+                                if c == 0 {
+                                    return;
+                                }
+                                let Template::Gpu(g) = &compressed.templates[tmpl_id as usize]
+                                else {
+                                    return;
+                                };
+                                let dur = g.dur.get(inst_id as usize).unwrap_or(0);
+                                let bucket = if c == 1 { &mut compute } else { &mut comm };
+                                *bucket.entry(rank.clone()).or_insert(0) += dur;
+                            });
+                        }
                     }
                 }
             }
         }
+
         let tree_walk_secs = elapsed_secs(start);
         let start = std::time::Instant::now();
         let result = load_balance_json(&compute, &comm);
@@ -128,28 +156,28 @@ impl AnalysisTask for ParallelGroup {
 /// **GPU-side** instance encountered (Gpu nodes plus the `gpu_*` half
 /// of KernelLaunch / KernelsLaunch).  CPU instances are intentionally
 /// skipped — this task is GPU-device-time only.
-fn walk_kernels(node: &Node, f: &mut impl FnMut(TemplateId, InstanceId)) {
+fn walk_kernels_legacy(node: &Node, f: &mut impl FnMut(TemplateId, InstanceId)) {
     match node {
         Node::Root { children } => {
             for c in children {
-                walk_kernels(c, f);
+                walk_kernels_legacy(c, f);
             }
         }
         Node::Cpu(n) => {
             for c in &n.children {
-                walk_kernels(c, f);
+                walk_kernels_legacy(c, f);
             }
             for s in &n.slots {
-                walk_kernels(s, f);
+                walk_kernels_legacy(s, f);
             }
         }
         Node::SameCpu(n) => {
             for c in &n.children {
-                walk_kernels(c, f);
+                walk_kernels_legacy(c, f);
             }
             for slot in n.slots.entries() {
                 for s in &slot.children {
-                    walk_kernels(s, f);
+                    walk_kernels_legacy(s, f);
                 }
             }
         }
@@ -164,6 +192,52 @@ fn walk_kernels(node: &Node, f: &mut impl FnMut(TemplateId, InstanceId)) {
         Node::KernelsLaunch(k) => {
             for (t, i) in k.gpu_templates.iter().zip(k.gpu_instances.iter()) {
                 f(*t, *i);
+            }
+        }
+    }
+}
+
+/// Arena-based version of `walk_kernels_legacy`.
+fn walk_kernels_arena(arena: &NodeArena, node_id: NodeId, f: &mut impl FnMut(TemplateId, InstanceId)) {
+    match arena.get(node_id) {
+        ArenaNode::Root { children } => {
+            for &child_id in arena.children(*children) {
+                walk_kernels_arena(arena, child_id, f);
+            }
+        }
+        ArenaNode::Cpu { children, slots, .. } => {
+            let (children, slots) = (*children, *slots);
+            for &child_id in arena.children(children) {
+                walk_kernels_arena(arena, child_id, f);
+            }
+            for &child_id in arena.children(slots) {
+                walk_kernels_arena(arena, child_id, f);
+            }
+        }
+        ArenaNode::SameCpu { children, slots_start, slots_len, .. } => {
+            let (children, slots_start, slots_len) = (*children, *slots_start, *slots_len);
+            for &child_id in arena.children(children) {
+                walk_kernels_arena(arena, child_id, f);
+            }
+            for slot in arena.slots_slice(slots_start, slots_len) {
+                for &child_id in arena.children(slot.children) {
+                    walk_kernels_arena(arena, child_id, f);
+                }
+            }
+        }
+        ArenaNode::Gpu { refs_start, refs_len } => {
+            let (refs_start, refs_len) = (*refs_start, *refs_len);
+            for gpu_ref in arena.gpu_refs_slice(refs_start, refs_len) {
+                f(gpu_ref.template, gpu_ref.instance);
+            }
+        }
+        ArenaNode::KernelLaunch { gpu_template, gpu_instance, .. } => {
+            f(*gpu_template, *gpu_instance);
+        }
+        ArenaNode::KernelsLaunch { refs_start, refs_len, .. } => {
+            let (refs_start, refs_len) = (*refs_start, *refs_len);
+            for r in arena.kernels_refs_slice(refs_start, refs_len) {
+                f(r.gpu_template, r.gpu_instance);
             }
         }
     }

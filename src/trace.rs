@@ -669,8 +669,7 @@ impl CompressedTrace {
         drop(raw);
         trace.shrink_to_fit();
         trace.materialize_arenas();
-        // Note: ranks are kept for now until all analysis code migrates to arena.
-        // Call drop_node_trees() after migration to reclaim memory.
+        trace.drop_node_trees();
         Ok(trace)
     }
 

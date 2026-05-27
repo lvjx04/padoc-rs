@@ -1,0 +1,6 @@
+compressor	dataset	task	artifact_bytes	read_secs	load_secs	analyze_secs	events	resident_bytes	rows	attributed	total_gpu_refs	fraction	peak_rss_kb
+padoc	leworldmodel_full	layer_compute_comm_overlap	38979996	0.0200	2.7118	0.4529	3469389	254926506	808	4637	29589	0.156714	640508
+raw_json	leworldmodel_full	layer_compute_comm_overlap	732791857	0.3399	9.8899	2.9516	3469389	2002907791	36	5488	29589	0.185474	9432952
+gzip_json	leworldmodel_full	layer_compute_comm_overlap	42966254	0.0228	10.8794	0.9810	3469389	2002907791	36	5488	29589	0.185474	9474284
+scalatrace	leworldmodel_full	layer_compute_comm_overlap	14314236	0.0084	2.6978	0.9745	3469389	1802564191	36	5488	29589	0.185474	3203660
+tracezip	leworldmodel_full	layer_compute_comm_overlap	28268761	0.0151	2.6986	1.4545	3469389	1802564191	36	5488	29589	0.185474	3286936

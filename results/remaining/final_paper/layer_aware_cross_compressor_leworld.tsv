@@ -1,0 +1,16 @@
+compressor	dataset	task	load_secs	analyze_secs	total_secs	artifact_bytes
+padoc	leworldmodel_full	layer_kernel_hotspot	2.8467	0.5825	3.4292	38979996
+padoc	leworldmodel_full	layer_compute_comm_overlap	2.7306	0.4903	3.2209	38979996
+padoc	leworldmodel_full	layer_rank_balance	2.6790	0.4623	3.1413	38979996
+raw_json	leworldmodel_full	layer_kernel_hotspot	9.6481	2.1674	11.8155	732791857
+raw_json	leworldmodel_full	layer_compute_comm_overlap	8.5008	1.0671	9.5679	732791857
+raw_json	leworldmodel_full	layer_rank_balance	8.4054	1.0646	9.4700	732791857
+gzip_json	leworldmodel_full	layer_kernel_hotspot	8.7894	1.0993	9.8887	42966254
+gzip_json	leworldmodel_full	layer_compute_comm_overlap	8.7796	1.0854	9.8651	42966254
+gzip_json	leworldmodel_full	layer_rank_balance	9.0856	1.0088	10.0944	42966254
+scalatrace	leworldmodel_full	layer_kernel_hotspot	1.7687	1.0437	2.8124	14314236
+scalatrace	leworldmodel_full	layer_compute_comm_overlap	1.7579	1.0282	2.7861	14314236
+scalatrace	leworldmodel_full	layer_rank_balance	1.7568	1.0270	2.7838	14314236
+tracezip	leworldmodel_full	layer_kernel_hotspot	1.8302	1.5712	3.4014	28268761
+tracezip	leworldmodel_full	layer_compute_comm_overlap	1.8183	1.5507	3.3690	28268761
+tracezip	leworldmodel_full	layer_rank_balance	1.8045	1.5439	3.3484	28268761

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use crate::analysis::kernel_class::is_nccl_kernel;
 use crate::analysis::{elapsed_secs, profiled_result, AnalysisTask};
+use crate::arena::{ArenaNode, NodeArena, NodeId};
 use crate::event::Template;
 use crate::node::{InstanceId, Node, TemplateId};
 use crate::slp::decode_name_nums;
@@ -110,19 +111,35 @@ impl AnalysisTask for LayerKernelHotspot {
             total_gpu_refs: total_gpu_kernel_refs(compressed),
             ..Coverage::default()
         };
-        walk_layer_subtrees(compressed, |layer, gpu| {
-            let Some(Template::Gpu(g)) = compressed.templates.get(gpu.tmpl_id as usize) else {
-                return;
-            };
-            if g.cat.as_deref() != Some("kernel") {
-                return;
-            }
-            coverage.attributed_gpu_refs += 1;
-            let key = (layer.to_string(), g.name_pattern.clone());
-            let entry = tally.entry(key).or_default();
-            entry.count += 1;
-            entry.total_dur_us += g.dur.get(gpu.inst_id as usize).unwrap_or(0);
-        });
+        if compressed.arenas.is_some() {
+            walk_layer_subtrees_arena(compressed, |layer, gpu| {
+                let Some(Template::Gpu(g)) = compressed.templates.get(gpu.tmpl_id as usize) else {
+                    return;
+                };
+                if g.cat.as_deref() != Some("kernel") {
+                    return;
+                }
+                coverage.attributed_gpu_refs += 1;
+                let key = (layer.to_string(), g.name_pattern.clone());
+                let entry = tally.entry(key).or_default();
+                entry.count += 1;
+                entry.total_dur_us += g.dur.get(gpu.inst_id as usize).unwrap_or(0);
+            });
+        } else {
+            walk_layer_subtrees_legacy(compressed, |layer, gpu| {
+                let Some(Template::Gpu(g)) = compressed.templates.get(gpu.tmpl_id as usize) else {
+                    return;
+                };
+                if g.cat.as_deref() != Some("kernel") {
+                    return;
+                }
+                coverage.attributed_gpu_refs += 1;
+                let key = (layer.to_string(), g.name_pattern.clone());
+                let entry = tally.entry(key).or_default();
+                entry.count += 1;
+                entry.total_dur_us += g.dur.get(gpu.inst_id as usize).unwrap_or(0);
+            });
+        }
         let collect_secs = elapsed_secs(start);
         let start = std::time::Instant::now();
         let mut result = kernel_hotspot_json(tally, self.top_k.max(20));
@@ -165,24 +182,45 @@ impl AnalysisTask for LayerComputeCommOverlap {
             total_gpu_refs: total_gpu_kernel_refs(compressed),
             ..Coverage::default()
         };
-        walk_rank_layer_subtrees(compressed, |rank, layer, gpu| {
-            let Some(Template::Gpu(g)) = compressed.templates.get(gpu.tmpl_id as usize) else {
-                return;
-            };
-            if g.cat.as_deref() != Some("kernel") {
-                return;
-            }
-            let ts = g.ts.get(gpu.inst_id as usize).unwrap_or(0);
-            let dur = g.dur.get(gpu.inst_id as usize).unwrap_or(0);
-            if dur <= 0 {
-                return;
-            }
-            coverage.attributed_gpu_refs += 1;
-            let entry = by_rank_layer
-                .entry((rank.to_string(), layer.to_string()))
-                .or_default();
-            push_interval(entry, &g.name_pattern, ts, dur);
-        });
+        if compressed.arenas.is_some() {
+            walk_rank_layer_subtrees_arena(compressed, |rank, layer, gpu| {
+                let Some(Template::Gpu(g)) = compressed.templates.get(gpu.tmpl_id as usize) else {
+                    return;
+                };
+                if g.cat.as_deref() != Some("kernel") {
+                    return;
+                }
+                let ts = g.ts.get(gpu.inst_id as usize).unwrap_or(0);
+                let dur = g.dur.get(gpu.inst_id as usize).unwrap_or(0);
+                if dur <= 0 {
+                    return;
+                }
+                coverage.attributed_gpu_refs += 1;
+                let entry = by_rank_layer
+                    .entry((rank.to_string(), layer.to_string()))
+                    .or_default();
+                push_interval(entry, &g.name_pattern, ts, dur);
+            });
+        } else {
+            walk_rank_layer_subtrees_legacy(compressed, |rank, layer, gpu| {
+                let Some(Template::Gpu(g)) = compressed.templates.get(gpu.tmpl_id as usize) else {
+                    return;
+                };
+                if g.cat.as_deref() != Some("kernel") {
+                    return;
+                }
+                let ts = g.ts.get(gpu.inst_id as usize).unwrap_or(0);
+                let dur = g.dur.get(gpu.inst_id as usize).unwrap_or(0);
+                if dur <= 0 {
+                    return;
+                }
+                coverage.attributed_gpu_refs += 1;
+                let entry = by_rank_layer
+                    .entry((rank.to_string(), layer.to_string()))
+                    .or_default();
+                push_interval(entry, &g.name_pattern, ts, dur);
+            });
+        }
         let collect_secs = elapsed_secs(start);
         let start = std::time::Instant::now();
         let result = overlap_json(by_rank_layer, coverage);
@@ -260,11 +298,11 @@ impl ActiveLayer {
     }
 }
 
-fn walk_layer_subtrees(compressed: &CompressedTrace, mut f: impl FnMut(&str, GpuKernel)) {
-    walk_rank_layer_subtrees(compressed, |_rank, layer, gpu| f(layer, gpu));
+fn walk_layer_subtrees_legacy(compressed: &CompressedTrace, mut f: impl FnMut(&str, GpuKernel)) {
+    walk_rank_layer_subtrees_legacy(compressed, |_rank, layer, gpu| f(layer, gpu));
 }
 
-fn walk_rank_layer_subtrees(
+fn walk_rank_layer_subtrees_legacy(
     compressed: &CompressedTrace,
     mut f: impl FnMut(&str, &str, GpuKernel),
 ) {
@@ -272,14 +310,14 @@ fn walk_rank_layer_subtrees(
         for threads in processes.values() {
             for phases in threads.values() {
                 for root in phases.values() {
-                    walk_node_for_layers(compressed, rank, root, ActiveLayer::None, &mut f);
+                    walk_node_for_layers_legacy(compressed, rank, root, ActiveLayer::None, &mut f);
                 }
             }
         }
     }
 }
 
-fn walk_node_for_layers(
+fn walk_node_for_layers_legacy(
     compressed: &CompressedTrace,
     rank: &str,
     node: &Node,
@@ -289,7 +327,7 @@ fn walk_node_for_layers(
     match node {
         Node::Root { children } => {
             for child in children {
-                walk_node_for_layers(compressed, rank, child, active_layer.clone(), f);
+                walk_node_for_layers_legacy(compressed, rank, child, active_layer.clone(), f);
             }
         }
         Node::Cpu(n) => {
@@ -297,10 +335,10 @@ fn walk_node_for_layers(
                 ActiveLayer::from_option(cpu_instance_layer(compressed, n.template, n.instance))
                     .or(active_layer);
             for child in &n.children {
-                walk_node_for_layers(compressed, rank, child, next_layer.clone(), f);
+                walk_node_for_layers_legacy(compressed, rank, child, next_layer.clone(), f);
             }
             for child in &n.slots {
-                walk_node_for_layers(compressed, rank, child, next_layer.clone(), f);
+                walk_node_for_layers_legacy(compressed, rank, child, next_layer.clone(), f);
             }
         }
         Node::SameCpu(n) => {
@@ -322,13 +360,13 @@ fn walk_node_for_layers(
             )
             .or(active_layer);
             for child in &n.children {
-                walk_node_for_layers(compressed, rank, child, next_layer.clone(), f);
+                walk_node_for_layers_legacy(compressed, rank, child, next_layer.clone(), f);
             }
             for slot in n.slots.entries() {
                 let slot_layer =
                     ActiveLayer::from_option(next_layer.at(slot.instance_index as usize));
                 for child in &slot.children {
-                    walk_node_for_layers(compressed, rank, child, slot_layer.clone(), f);
+                    walk_node_for_layers_legacy(compressed, rank, child, slot_layer.clone(), f);
                 }
             }
         }
@@ -396,6 +434,152 @@ fn walk_node_for_layers(
                         GpuKernel {
                             tmpl_id: *tmpl_id,
                             inst_id: *inst_id,
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn walk_layer_subtrees_arena(compressed: &CompressedTrace, mut f: impl FnMut(&str, GpuKernel)) {
+    walk_rank_layer_subtrees_arena(compressed, |_rank, layer, gpu| f(layer, gpu));
+}
+
+fn walk_rank_layer_subtrees_arena(
+    compressed: &CompressedTrace,
+    mut f: impl FnMut(&str, &str, GpuKernel),
+) {
+    let arenas = compressed.arenas.as_ref().unwrap();
+    for (rank, processes) in arenas {
+        for threads in processes.values() {
+            for phases in threads.values() {
+                for (arena, root_id) in phases.values() {
+                    walk_node_for_layers_arena(compressed, rank, arena, *root_id, ActiveLayer::None, &mut f);
+                }
+            }
+        }
+    }
+}
+
+fn walk_node_for_layers_arena(
+    compressed: &CompressedTrace,
+    rank: &str,
+    arena: &NodeArena,
+    node_id: NodeId,
+    active_layer: ActiveLayer,
+    f: &mut impl FnMut(&str, &str, GpuKernel),
+) {
+    match arena.get(node_id) {
+        ArenaNode::Root { children } => {
+            let children = *children;
+            for &child_id in arena.children(children) {
+                walk_node_for_layers_arena(compressed, rank, arena, child_id, active_layer.clone(), f);
+            }
+        }
+        ArenaNode::Cpu { template, instance, children, slots } => {
+            let (template, instance, children, slots) = (*template, *instance, *children, *slots);
+            let next_layer =
+                ActiveLayer::from_option(cpu_instance_layer(compressed, template, instance))
+                    .or(active_layer);
+            for &child_id in arena.children(children) {
+                walk_node_for_layers_arena(compressed, rank, arena, child_id, next_layer.clone(), f);
+            }
+            for &child_id in arena.children(slots) {
+                walk_node_for_layers_arena(compressed, rank, arena, child_id, next_layer.clone(), f);
+            }
+        }
+        ArenaNode::SameCpu { template, instances, children, slots_start, slots_len } => {
+            let (template, instances, children, slots_start, slots_len) =
+                (*template, *instances, *children, *slots_start, *slots_len);
+            let inst_slice = arena.instances(instances);
+            let repeated_scope = repeated_scope_layers(compressed, template, inst_slice.len());
+            let next_layer = ActiveLayer::from_layers(
+                inst_slice
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, inst)| {
+                        cpu_instance_layer(compressed, template, *inst)
+                            .or_else(|| {
+                                repeated_scope
+                                    .as_ref()
+                                    .map(|scope| format!("{scope}#{idx}"))
+                            })
+                            .or_else(|| active_layer.at(idx))
+                    })
+                    .collect(),
+            )
+            .or(active_layer);
+            for &child_id in arena.children(children) {
+                walk_node_for_layers_arena(compressed, rank, arena, child_id, next_layer.clone(), f);
+            }
+            for slot in arena.slots_slice(slots_start, slots_len) {
+                let slot_layer =
+                    ActiveLayer::from_option(next_layer.at(slot.instance_index as usize));
+                for &child_id in arena.children(slot.children) {
+                    walk_node_for_layers_arena(compressed, rank, arena, child_id, slot_layer.clone(), f);
+                }
+            }
+        }
+        ArenaNode::Gpu { refs_start, refs_len } => {
+            let (refs_start, refs_len) = (*refs_start, *refs_len);
+            let refs = arena.gpu_refs_slice(refs_start, refs_len);
+            if let Some(layer) = active_layer.scalar() {
+                for gpu_ref in refs {
+                    f(
+                        rank,
+                        &layer,
+                        GpuKernel {
+                            tmpl_id: gpu_ref.template,
+                            inst_id: gpu_ref.instance,
+                        },
+                    );
+                }
+            } else if let ActiveLayer::Many(layers) = &active_layer {
+                if layers.len() == refs.len() {
+                    for (layer, gpu_ref) in layers.iter().zip(refs.iter()) {
+                        if let Some(layer) = layer {
+                            f(
+                                rank,
+                                layer,
+                                GpuKernel {
+                                    tmpl_id: gpu_ref.template,
+                                    inst_id: gpu_ref.instance,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        ArenaNode::KernelLaunch { cpu_template, cpu_instance, gpu_template, gpu_instance } => {
+            let (cpu_template, cpu_instance, gpu_template, gpu_instance) =
+                (*cpu_template, *cpu_instance, *gpu_template, *gpu_instance);
+            if let Some(layer) = cpu_instance_layer(compressed, cpu_template, cpu_instance)
+                .or_else(|| active_layer.scalar())
+            {
+                f(
+                    rank,
+                    &layer,
+                    GpuKernel {
+                        tmpl_id: gpu_template,
+                        inst_id: gpu_instance,
+                    },
+                );
+            }
+        }
+        ArenaNode::KernelsLaunch { cpu_template, refs_start, refs_len } => {
+            let (cpu_template, refs_start, refs_len) = (*cpu_template, *refs_start, *refs_len);
+            for (idx, r) in arena.kernels_refs_slice(refs_start, refs_len).iter().enumerate() {
+                if let Some(layer) = cpu_instance_layer(compressed, cpu_template, r.cpu_instance)
+                    .or_else(|| active_layer.at(idx))
+                {
+                    f(
+                        rank,
+                        &layer,
+                        GpuKernel {
+                            tmpl_id: r.gpu_template,
+                            inst_id: r.gpu_instance,
                         },
                     );
                 }

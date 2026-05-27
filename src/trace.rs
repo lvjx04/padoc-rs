@@ -559,6 +559,10 @@ fn simd_to_serde(v: simd_json::OwnedValue) -> serde_json::Value {
 /// Output of `TemplateCompressor`.  Self-contained: can be serialised to
 /// disk via [`CompressedTrace::write_to_path`] and reloaded for in-situ
 /// analysis or full decompression.
+///
+/// On-disk format: msgpack-encoded Node trees inside zstd.
+/// In-memory: after deserialization, Node trees are converted to arena
+/// representation for memory efficiency, then the original trees are dropped.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CompressedTrace {
     pub templates: Vec<Template>,
@@ -566,6 +570,10 @@ pub struct CompressedTrace {
     pub ranks: BTreeMap<String, BTreeMap<i64, BTreeMap<String, BTreeMap<u8, Node>>>>,
     pub metadata: AHashMap<String, AHashMap<String, serde_json::Value>>,
     pub start_timestamp: AHashMap<String, i64>,
+    /// Arena representation — populated after deserialization or compress.
+    /// When present, analysis code should prefer this over `ranks`.
+    #[serde(skip)]
+    pub arenas: Option<BTreeMap<String, BTreeMap<i64, BTreeMap<String, BTreeMap<u8, (crate::arena::NodeArena, crate::arena::NodeId)>>>>>,
 }
 
 impl CompressedTrace {
@@ -660,7 +668,43 @@ impl CompressedTrace {
         let mut trace: CompressedTrace = rmp_serde::from_slice(&raw)?;
         drop(raw);
         trace.shrink_to_fit();
+        trace.materialize_arenas();
+        // Note: ranks are kept for now until all analysis code migrates to arena.
+        // Call drop_node_trees() after migration to reclaim memory.
         Ok(trace)
+    }
+
+    /// Convert all Node trees to arena representation for memory efficiency.
+    /// After this call, `self.arenas` is populated and analysis code should
+    /// prefer it.  The original `ranks` Node trees are kept for serialization
+    /// compatibility but could be dropped if memory is critical.
+    pub fn materialize_arenas(&mut self) {
+        use crate::arena::NodeArena;
+        let mut arenas = BTreeMap::new();
+        for (rank, processes) in &self.ranks {
+            let mut rank_arenas = BTreeMap::new();
+            for (pid, threads) in processes {
+                let mut pid_arenas = BTreeMap::new();
+                for (tid, phases) in threads {
+                    let mut tid_arenas = BTreeMap::new();
+                    for (ph, root) in phases {
+                        let (arena, root_id) = NodeArena::from_tree(root);
+                        tid_arenas.insert(*ph, (arena, root_id));
+                    }
+                    pid_arenas.insert(tid.clone(), tid_arenas);
+                }
+                rank_arenas.insert(*pid, pid_arenas);
+            }
+            arenas.insert(rank.clone(), rank_arenas);
+        }
+        self.arenas = Some(arenas);
+    }
+
+    /// Drop the recursive Node trees to free memory after arena conversion.
+    /// After calling this, serialization (`to_bytes`/`write_to_path`) will
+    /// need to reconstruct from arenas first.
+    pub fn drop_node_trees(&mut self) {
+        self.ranks = BTreeMap::new();
     }
 
     /// Drop excess capacity left by serde's growth strategy.

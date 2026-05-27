@@ -8,11 +8,12 @@
 //!   [`AnalysisTask::supports_in_situ`] to decide whether to skip the
 //!   decode step for PADOC.
 //!
-//! The core paper tasks:
+//! The core paper tasks cover 4 access dimensions:
 //!
-//! * `rank_load_balance`           — per-rank GPU compute/communication balance.
-//! * `layer_kernel_hotspot`        — per-layer GPU kernel hotspots via CPU->GPU links.
-//! * `layer_compute_comm_overlap`  — per-layer compute/communication overlap.
+//! * `operator_hotspot`            — by operator type: top-N operator/kernel by total dur.
+//! * `rank_load_balance`           — by rank: per-rank GPU compute/communication balance.
+//! * `layer_compute_comm_overlap`  — by layer: per-layer compute/communication overlap.
+//! * `gpu_bubble_rate`             — by time: per-rank GPU idle (bubble) fraction.
 
 use crate::trace::{CompressedTrace, Trace};
 use crate::Result;
@@ -20,6 +21,7 @@ use serde_json::Value;
 use std::time::Instant;
 
 mod compute_comm_overlap;
+mod gpu_bubble;
 mod kernel_class;
 mod layer_gpu;
 mod layer_operator_balance;
@@ -28,6 +30,7 @@ mod parallel_group;
 mod stream_load_balance;
 
 pub use compute_comm_overlap::ComputeCommOverlap;
+pub use gpu_bubble::GpuBubbleRate;
 pub use layer_gpu::{LayerComputeCommOverlap, LayerKernelHotspot};
 pub use layer_operator_balance::LayerOperatorBalance;
 pub use operator_hotspot::OperatorHotspot;
@@ -73,8 +76,9 @@ pub(crate) fn elapsed_secs(start: Instant) -> f64 {
 
 pub fn registry() -> Vec<Box<dyn AnalysisTask>> {
     vec![
+        Box::new(OperatorHotspot::default()),
         Box::new(ParallelGroup::default()),
-        Box::new(LayerKernelHotspot::default()),
         Box::new(LayerComputeCommOverlap),
+        Box::new(GpuBubbleRate::default()),
     ]
 }

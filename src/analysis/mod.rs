@@ -8,10 +8,8 @@
 //!   [`AnalysisTask::supports_in_situ`] to decide whether to skip the
 //!   decode step for PADOC.
 //!
-//! The core paper tasks cover both compressed-template aggregation and
-//! structure-aware GPU attribution:
+//! The core paper tasks:
 //!
-//! * `operator_hotspot`            — top-N operator/kernel by total dur.
 //! * `rank_load_balance`           — per-rank GPU compute/communication balance.
 //! * `layer_kernel_hotspot`        — per-layer GPU kernel hotspots via CPU->GPU links.
 //! * `layer_compute_comm_overlap`  — per-layer compute/communication overlap.
@@ -75,7 +73,6 @@ pub(crate) fn elapsed_secs(start: Instant) -> f64 {
 
 pub fn registry() -> Vec<Box<dyn AnalysisTask>> {
     vec![
-        Box::new(OperatorHotspot::default()),
         Box::new(ParallelGroup::default()),
         Box::new(LayerKernelHotspot::default()),
         Box::new(LayerComputeCommOverlap),

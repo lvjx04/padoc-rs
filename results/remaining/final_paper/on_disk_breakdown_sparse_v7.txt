@@ -1,0 +1,164 @@
+=== leworldmodel_full ===
+on_disk_bytes	38979996
+templates	4094
+cpu_templates	4021
+gpu_templates	73
+cpu_instances	3438954
+gpu_instances	30435
+nodes	1783991
+node_breakdown	root=33183 cpu=1205628 same_cpu=538581 gpu=12 kernel_launch=5894 kernels_launch=693
+same_cpu_slots	dense_rows=2233326 sparse_entries=186659 children=611593
+num_column_breakdown	constant=1748 i32=6511 i64=0
+cpu_ts_bytes	13760644	0.013 GiB
+cpu_dur_bytes	13162072	0.012 GiB
+cpu_id_bytes	218544	0.000 GiB
+gpu_ts_bytes	121740	0.000 GiB
+gpu_dur_bytes	121672	0.000 GiB
+gpu_pid_bytes	121728	0.000 GiB
+gpu_ph_bytes	365	0.000 GiB
+gpu_stream_bytes	175776	0.000 GiB
+name_num_vecs_bytes	1891996	0.002 GiB
+name_num_payload_bytes	14512	0.000 GiB
+node_vec_storage_bytes	162958840	0.152 GiB
+node_u32_vec_storage_bytes	9135660	0.009 GiB
+arg_value_count	10324129
+arg_vec_storage_bytes	47347952	0.044 GiB
+arg_payload_bytes	5501763	0.005 GiB
+string_payload_other_bytes	393242	0.000 GiB
+accounted_selected_total_bytes	254926506	0.237 GiB
+on_disk_region_zstd_level	3
+on_disk_region_artifact_bytes	38979996
+on_disk_region	name	msgpack_bytes	zstd_bytes
+on_disk_region	template_headers	665380	57946
+on_disk_region	ts_columns	16292794	4713353
+on_disk_region	dur_columns	3414947	339083
+on_disk_region	ids_pids_phases_streams	270878	45336
+on_disk_region	name_nums	926328	53837
+on_disk_region	args_columns	53189815	20501632
+on_disk_region	rank_node_tree	72989809	12597670
+on_disk_region	node_soft_links	188215449	13573761
+on_disk_region	metadata	361	151
+on_disk_region	start_timestamp	23	35
+=== qwen3_full ===
+on_disk_bytes	287737929
+templates	5498
+cpu_templates	5414
+gpu_templates	84
+cpu_instances	30961798
+gpu_instances	2851776
+nodes	11248516
+node_breakdown	root=312399 cpu=5208093 same_cpu=3808018 gpu=512 kernel_launch=1461196 kernels_launch=458298
+same_cpu_slots	dense_rows=25753705 sparse_entries=3062367 children=3859003
+num_column_breakdown	constant=4880 i32=6194 i64=0
+cpu_ts_bytes	123864640	0.115 GiB
+cpu_dur_bytes	91954704	0.086 GiB
+cpu_id_bytes	0	0.000 GiB
+gpu_ts_bytes	11407112	0.011 GiB
+gpu_dur_bytes	11407112	0.011 GiB
+gpu_pid_bytes	11406624	0.011 GiB
+gpu_ph_bytes	420	0.000 GiB
+gpu_stream_bytes	35790048	0.033 GiB
+name_num_vecs_bytes	22119880	0.021 GiB
+name_num_payload_bytes	274548	0.000 GiB
+node_vec_storage_bytes	1087376752	1.013 GiB
+node_u32_vec_storage_bytes	119701780	0.111 GiB
+arg_value_count	52536565
+arg_vec_storage_bytes	366201972	0.341 GiB
+arg_payload_bytes	157549679	0.147 GiB
+string_payload_other_bytes	324433	0.000 GiB
+accounted_selected_total_bytes	2039379704	1.899 GiB
+on_disk_region_zstd_level	3
+on_disk_region_artifact_bytes	287737929
+on_disk_region	name	msgpack_bytes	zstd_bytes
+on_disk_region	template_headers	675808	47646
+on_disk_region	ts_columns	168976140	125503072
+on_disk_region	dur_columns	35295054	14482656
+on_disk_region	ids_pids_phases_streams	16948693	28582
+on_disk_region	name_nums	16427358	337909
+on_disk_region	args_columns	286246715	44784875
+on_disk_region	rank_node_tree	672075134	102376462
+on_disk_region	node_soft_links	1296194922	100638858
+on_disk_region	metadata	42829	4593
+on_disk_region	start_timestamp	3221	1443
+=== unifolm_full ===
+on_disk_bytes	774945231
+templates	16897
+cpu_templates	16633
+gpu_templates	264
+cpu_instances	71993430
+gpu_instances	8229641
+nodes	20335297
+node_breakdown	root=459954 cpu=12205564 same_cpu=7429638 gpu=872 kernel_launch=83054 kernels_launch=156215
+same_cpu_slots	dense_rows=59787866 sparse_entries=3131715 children=7951827
+num_column_breakdown	constant=5147 i32=28909 i64=0
+cpu_ts_bytes	287975464	0.268 GiB
+cpu_dur_bytes	251113836	0.234 GiB
+cpu_id_bytes	36300840	0.034 GiB
+gpu_ts_bytes	32918596	0.031 GiB
+gpu_dur_bytes	32728568	0.030 GiB
+gpu_pid_bytes	32918596	0.031 GiB
+gpu_ph_bytes	1320	0.000 GiB
+gpu_stream_bytes	261829653	0.244 GiB
+name_num_vecs_bytes	57665680	0.054 GiB
+name_num_payload_bytes	54800	0.000 GiB
+node_vec_storage_bytes	1889562264	1.760 GiB
+node_u32_vec_storage_bytes	316241096	0.295 GiB
+arg_value_count	246060531
+arg_vec_storage_bytes	1494076360	1.391 GiB
+arg_payload_bytes	327554009	0.305 GiB
+string_payload_other_bytes	1655708	0.002 GiB
+accounted_selected_total_bytes	5022596790	4.678 GiB
+on_disk_region_zstd_level	3
+on_disk_region_artifact_bytes	774945231
+on_disk_region	name	msgpack_bytes	zstd_bytes
+on_disk_region	template_headers	2778337	201646
+on_disk_region	ts_columns	400762973	144343518
+on_disk_region	dur_columns	72828998	6673602
+on_disk_region	ids_pids_phases_streams	137926931	3840454
+on_disk_region	name_nums	30086655	934417
+on_disk_region	args_columns	1331607162	352396895
+on_disk_region	rank_node_tree	1104359150	257048666
+on_disk_region	node_soft_links	2398214600	264151919
+on_disk_region	metadata	695	213
+on_disk_region	start_timestamp	45	45
+=== llama_full ===
+on_disk_bytes	2614795618
+templates	312
+cpu_templates	214
+gpu_templates	98
+cpu_instances	271043072
+gpu_instances	30245044
+nodes	67780289
+node_breakdown	root=2067212 cpu=20791394 same_cpu=22923564 gpu=6144 kernel_launch=18773030 kernels_launch=3218945
+same_cpu_slots	dense_rows=250251678 sparse_entries=35870076 children=37565795
+num_column_breakdown	constant=4 i32=716 i64=0
+cpu_ts_bytes	1084164128	1.010 GiB
+cpu_dur_bytes	705681496	0.657 GiB
+cpu_id_bytes	378482608	0.352 GiB
+gpu_ts_bytes	120980176	0.113 GiB
+gpu_dur_bytes	120980176	0.113 GiB
+gpu_pid_bytes	120980176	0.113 GiB
+gpu_ph_bytes	490	0.000 GiB
+gpu_stream_bytes	405666881	0.378 GiB
+name_num_vecs_bytes	1530645128	1.426 GiB
+name_num_payload_bytes	1063	0.000 GiB
+node_vec_storage_bytes	7107072984	6.619 GiB
+node_u32_vec_storage_bytes	1138670880	1.060 GiB
+arg_value_count	567742850
+arg_vec_storage_bytes	2621627112	2.442 GiB
+arg_payload_bytes	100453388	0.094 GiB
+string_payload_other_bytes	63100	0.000 GiB
+accounted_selected_total_bytes	15435469786	14.375 GiB
+on_disk_region_zstd_level	3
+on_disk_region_artifact_bytes	2614795618
+on_disk_region	name	msgpack_bytes	zstd_bytes
+on_disk_region	template_headers	85398	8105
+on_disk_region	ts_columns	1505735597	1073867885
+on_disk_region	dur_columns	259492391	101498433
+on_disk_region	ids_pids_phases_streams	573876467	153426779
+on_disk_region	name_nums	401632500	2715745
+on_disk_region	args_columns	2037114675	295247430
+on_disk_region	rank_node_tree	5054399001	987709737
+on_disk_region	node_soft_links	8548916485	925145515
+on_disk_region	metadata	175317	20537
+on_disk_region	start_timestamp	13229	5408

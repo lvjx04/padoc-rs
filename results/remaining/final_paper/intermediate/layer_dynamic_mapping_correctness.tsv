@@ -1,0 +1,12 @@
+leworldmodel_full	padoc	/mnt/treasure/ljx/artifacts_v7_sparse/leworldmodel_full.padoc.zst	layer_kernel_hotspot	4637	29589	0.156714	20
+leworldmodel_full	padoc	/mnt/treasure/ljx/artifacts_v7_sparse/leworldmodel_full.padoc.zst	layer_compute_comm_overlap	4637	29589	0.156714	808
+leworldmodel_full	padoc	/mnt/treasure/ljx/artifacts_v7_sparse/leworldmodel_full.padoc.zst	layer_rank_balance	4637	29589	0.156714	597
+leworldmodel_full	raw_json	/mnt/treasure/ljx/artifacts_v6/leworldmodel_full.raw_json.bin	layer_kernel_hotspot	5488	29589	0.185474	20
+leworldmodel_full	raw_json	/mnt/treasure/ljx/artifacts_v6/leworldmodel_full.raw_json.bin	layer_compute_comm_overlap	5488	29589	0.185474	36
+leworldmodel_full	raw_json	/mnt/treasure/ljx/artifacts_v6/leworldmodel_full.raw_json.bin	layer_rank_balance	5488	29589	0.185474	18
+qwen3_full	padoc	/mnt/treasure/ljx/artifacts_v7_sparse/qwen3_full.padoc.zst	layer_kernel_hotspot	1592830	1806096	0.881919	20
+qwen3_full	padoc	/mnt/treasure/ljx/artifacts_v7_sparse/qwen3_full.padoc.zst	layer_compute_comm_overlap	1592830	1806096	0.881919	312106
+qwen3_full	padoc	/mnt/treasure/ljx/artifacts_v7_sparse/qwen3_full.padoc.zst	layer_rank_balance	1592830	1806096	0.881919	3792
+qwen3_full	raw_json	/mnt/treasure/ljx/artifacts_v6/qwen3_full.raw_json.bin	layer_kernel_hotspot	0	1806096	0.000000	0
+qwen3_full	raw_json	/mnt/treasure/ljx/artifacts_v6/qwen3_full.raw_json.bin	layer_compute_comm_overlap	0	1806096	0.000000	0
+qwen3_full	raw_json	/mnt/treasure/ljx/artifacts_v6/qwen3_full.raw_json.bin	layer_rank_balance	0	1806096	0.000000	0

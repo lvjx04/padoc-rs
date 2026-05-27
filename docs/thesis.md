@@ -38,7 +38,7 @@
 
 本文设计并实现了 PADOC，一个面向 AI profiler trace 的结构化压缩与原位分析系统。PADOC 将原始事件归并为模板，将每个模板的时间戳、持续时间、参数和名称数字部分存储为类型化列，并构建以 rank 为根的调用树。系统在树中显式保留 CPU launch 与 GPU kernel 之间的关联边，同时使用重复 CPU 子树合并、锚点匹配、参数去重、名称模式归一化和整数列紧凑化等技术减少冗余。基于这一表示，PADOC 支持五类核心分析任务：算子热点、rank 负载均衡、层级 GPU kernel 热点、层级计算通信重叠，以及层级 rank 负载均衡。这三类层级 GPU 任务直接依赖 CPU 树和 CPU-GPU 关联边，因此能够验证结构化压缩对分析语义的作用。
 
-本文在四个真实 AI 工作负载上评估系统：LeWorldModel 推理、Qwen3 稠密训练、UniFolm world-model 训练和 1024 rank 的 LLaMA-70B 训练，事件数从 346.9 万到 3.01 亿，原始轨迹规模从 884.37 MiB 到 69.95 GiB。实验结果表明，PADOC 将这些轨迹压缩到 37.52 MiB 至 2.40 GiB，对应 23.57 倍至 31.00 倍压缩比。虽然 ScalaTrace 在部分数据集上获得更高字节压缩比，但 PADOC 保留可查询结构，并能在最大数据集上以单个合并 artifact 完成五个核心任务，端到端总时间为 109.86 s 至 168.83 s，峰值内存为 34.32 GiB。消融实验显示，在 Qwen3 数据集上，默认 PADOC 可将 1,592,830 个 GPU kernel 引用归因到层级或重复 scope，覆盖率为 88.19%；关闭 CPU-GPU kernel link 后，三类层级 GPU 分析的可归因引用和结果行均降为 0。这说明关联边不是单纯的存储开销，而是层级 GPU 分析的必要语义结构。综合来看，PADOC 支持的核心结论是：面向分析共同设计的结构化压缩表示可以在保持竞争性压缩率的同时，为大规模 AI 性能轨迹提供可扩展的原位分析能力。
+本文在四个真实 AI 工作负载上评估系统：LeWorldModel 推理、Qwen3 稠密训练、UniFolm world-model 训练和 1024 rank 的 LLaMA-70B 训练，事件数从 346.9 万到 3.01 亿，原始轨迹规模从 884.37 MiB 到 69.95 GiB。实验结果表明，PADOC 将这些轨迹压缩到 37.17 MiB 至 2.44 GiB，对应 23.79 倍至 31.08 倍压缩比。虽然 ScalaTrace 在部分数据集上获得更高字节压缩比，但 PADOC 保留可查询结构，并能在最大数据集上以单个合并 artifact 完成五个核心任务，端到端总时间为 133.99 s 至 226.27 s，accounted resident representation 为 14.38 GiB。消融实验显示，在 Qwen3 数据集上，默认 PADOC 可将 1,592,830 个 GPU kernel 引用归因到层级或重复 scope，覆盖率为 88.19%；关闭 CPU-GPU kernel link 后，三类层级 GPU 分析的可归因引用和结果行均降为 0。这说明关联边不是单纯的存储开销，而是层级 GPU 分析的必要语义结构。综合来看，PADOC 支持的核心结论是：面向分析共同设计的结构化压缩表示可以在保持竞争性压缩率的同时，为大规模 AI 性能轨迹提供可扩展的原位分析能力。
 
 关键词：AI 性能剖析；轨迹压缩；原位分析；结构化压缩；GPU kernel；负载均衡
 
@@ -50,7 +50,7 @@ Large-scale artificial intelligence training and inference workloads generate ma
 
 This thesis presents PADOC, a structural compression and in-situ analysis system for AI profiler traces. PADOC groups raw events into templates, stores per-instance timestamps, durations, arguments and numeric name components in typed columns, and builds a rank-rooted call tree. The tree explicitly preserves CPU launch to GPU kernel provenance links. PADOC further reduces redundancy with repeated CPU subtree compression, anchor matching, argument deduplication, name-pattern normalization and compact integer columns. Based on this representation, PADOC supports five core analysis tasks: operator hotspot, rank load balance, layer-aware GPU kernel hotspot, layer-aware compute-communication overlap, and layer-aware rank balance. The three layer-aware GPU tasks directly rely on the CPU tree and CPU-GPU provenance links, which makes them suitable for validating the semantic value of structural compression.
 
-The system is evaluated on four real AI workloads: LeWorldModel inference, Qwen3 dense training, UniFolm world-model training and a 1024-rank LLaMA-70B training trace. The traces contain 3.47 million to 301.29 million events, with raw sizes from 884.37 MiB to 69.95 GiB. PADOC compresses these traces to 37.52 MiB to 2.40 GiB, corresponding to compression ratios from 23.57x to 31.00x. Although ScalaTrace achieves smaller byte streams on some datasets, PADOC preserves queryable structure and can analyze the largest trace as a single merged artifact. On the LLaMA-70B trace, the five core tasks finish in 109.86 s to 168.83 s end-to-end with 34.32 GiB peak memory. A kernel-link ablation shows that on Qwen3, PADOC attributes 1,592,830 GPU kernel references to layer or repeated scopes with 88.19% coverage, while disabling CPU-GPU links reduces the attributed references and result rows of all three layer-aware GPU analyses to zero. These results support the main conclusion that analysis-aware structural compression can provide competitive compression ratio and scalable in-situ analysis for large AI profiling traces.
+The system is evaluated on four real AI workloads: LeWorldModel inference, Qwen3 dense training, UniFolm world-model training and a 1024-rank LLaMA-70B training trace. The traces contain 3.47 million to 301.29 million events, with raw sizes from 884.37 MiB to 69.95 GiB. PADOC compresses these traces to 37.17 MiB to 2.44 GiB, corresponding to compression ratios from 23.79x to 31.08x. Although ScalaTrace achieves smaller byte streams on some datasets, PADOC preserves queryable structure and can analyze the largest trace as a single merged artifact. On the LLaMA-70B trace, the five core tasks finish in 133.99 s to 226.27 s end-to-end, with 14.38 GiB accounted resident representation. A kernel-link ablation shows that on Qwen3, PADOC attributes 1,592,830 GPU kernel references to layer or repeated scopes with 88.19% coverage, while disabling CPU-GPU links reduces the attributed references and result rows of all three layer-aware GPU analyses to zero. These results support the main conclusion that analysis-aware structural compression can provide competitive compression ratio and scalable in-situ analysis for large AI profiling traces.
 
 Keywords: AI profiling; trace compression; in-situ analysis; structural compression; GPU kernel; load balance
 
@@ -239,7 +239,7 @@ CompressedTrace
 
 PADOC 使用 profiler 提供的 correlation 信息建立 CPU-GPU provenance link。若一个 CPU launch 对应一个 GPU kernel，系统生成 `KernelLaunch`；若一组 launch 和 kernel 具有相同模板结构，则合并为 `KernelsLaunch`。这些节点在存储上会增加实例引用和结构树开销，但在语义上使层级 GPU 分析成为可能。
 
-需要澄清的是，on-disk breakdown 中的历史字段名容易被误解为仅表示“软连接边”。实际上，`node_instance_refs` 和 `rank_node_tree` 代表节点实例引用和树结构，不只是 CPU-GPU link。对最大 `llama_full` artifact，`rank_node_tree` 和 `node_instance_refs` 分别贡献约 946.11 MB 和 925.15 MB 的 zstd 后区域大小，但它们对应整棵树和实例引用，而不是仅有 kernel link。真正的关键问题不是 link 能否减少字节，而是删除 link 后层级 GPU 分析是否还成立。第 6 章的消融实验表明，关闭 kernel link 后层级 GPU 分析结果行消失，说明该结构具有必要语义。
+需要澄清的是，on-disk breakdown 中的历史字段名容易被误解为仅表示“软连接边”。实际上，`node_instance_refs` 和 `rank_node_tree` 代表节点实例引用和树结构，不只是 CPU-GPU link。对最终 `llama_full` artifact，`rank_node_tree` 和 `node_instance_refs` 分别贡献约 987.71 MB 和 925.15 MB 的 zstd 后 region 大小，但它们对应整棵树和实例引用，而不是仅有 kernel link。真正的关键问题不是 link 能否减少字节，而是删除 link 后层级 GPU 分析是否还成立。第 6 章的消融实验表明，关闭 kernel link 后层级 GPU 分析结果行消失，说明该结构具有必要语义。
 
 ## 3.6 压缩流程
 
@@ -383,11 +383,11 @@ PADOC 原位路径的复杂度与任务访问维度相关。`operator_hotspot` �
 
 ## 5.5 评价指标
 
-压缩效果使用 artifact 大小和压缩比评价。压缩性能使用最快时间和吞吐评价。分析性能使用 read time、deserialize 或 decompress time、analyze time、total time 和 peak RSS 评价。结构消融使用可归因 GPU refs、总 GPU refs、coverage 和 result row count 评价。存储拆解使用各 encoded region 的 zstd 后字节数评价。扩展性实验使用 GPU 数、压缩线程数、synthetic layers 和 synthetic iterations 的扫描结果评价。
+压缩效果使用 artifact 大小和压缩比评价。压缩性能使用最快时间和吞吐评价。分析性能使用 read time、deserialize 或 decompress time、analyze time、total time 和 accounted resident representation 评价。结构消融使用可归因 GPU refs、总 GPU refs、coverage 和 result row count 评价。存储拆解使用各 encoded region 的 zstd 后字节数评价。扩展性实验使用 GPU 数、压缩线程数、synthetic layers 和 synthetic iterations 的扫描结果评价。
 
 ## 5.6 实验可复现性
 
-本项目的主要实验结果保存在 `results/remaining/` 下。综合结果文件为 `results/remaining/paper_results_summary.md`，核心 layer-aware 分析结果为 `results/remaining/core_layer_analysis.tsv`，kernel-link 消融结果为 `results/remaining/core_kernel_link_coverage.tsv` 和 `results/remaining/core_kernel_link_ablation.tsv`。压缩和分析命令由 `scripts/` 目录下脚本驱动，Rust benchmark harness 负责统一输出 TSV 和 Markdown 报告。
+本项目的主要实验结果保存在 `results/remaining/` 下。最终论文使用的综合结果文件为 `results/remaining/final_paper/final_experiment_results.md`，核心分析结果为 `results/remaining/final_paper/core_layer_analysis_sparse_v7.tsv`，磁盘和内存拆解为 `results/remaining/final_paper/on_disk_breakdown_sparse_v7.txt`，补充消融结果为 `results/remaining/final_paper/no_structural_core_ablation.tsv` 和 `results/remaining/final_paper/dynamic_kernel_mapping_ablation.tsv`。压缩和分析命令由 `scripts/` 目录下脚本驱动，Rust benchmark harness 负责统一输出 TSV 和 Markdown 报告。
 
 ---
 
@@ -395,158 +395,148 @@ PADOC 原位路径的复杂度与任务访问维度相关。`operator_hotspot` �
 
 ## 6.1 压缩效果
 
-PADOC 在四个数据集上的压缩结果如表 6-1 所示。最佳 workers 来自线程数扫描。
+表 6-1 展示 PADOC 与四类 baseline 的压缩结果。PADOC 数据使用最终 sparse-slot artifact，baseline 数据使用相同 trace 上的 v6 artifact。表中给出每个方法的具体大小和压缩比，避免只报告最佳 baseline。
 
-**表 6-1 PADOC 压缩结果**
-
-| 数据集 | PADOC artifact | 压缩比 | 最佳 workers | 最快压缩时间 | 吞吐 |
-|---|---:|---:|---:|---:|---:|
-| `leworldmodel_full` | 37.52 MiB | 23.57x | 2 | 13.687 s | 64.6 MB/s |
-| `qwen3_full` | 272.23 MiB | 26.00x | 16 | 38.413 s | 184.3 MB/s |
-| `unifolm_full` | 741.08 MiB | 31.00x | 16 | 199.686 s | 115.0 MB/s |
-| `llama_full` | 2.40 GiB | 29.18x | 32 | 357.691 s | 200.2 MB/s |
-
-四个数据集的压缩比位于 23.57 倍至 31.00 倍之间。`llama_full` 原始大小为 69.95 GiB，压缩后为 2.40 GiB，说明 PADOC 可以将千卡级 trace 保存为可管理的单个 artifact。相比 raw JSON，压缩后的存储和传输成本显著降低。
-
-与 baseline 的压缩比比较见表 6-2。
-
-**表 6-2 不同压缩器压缩比比较**
+**表 6-1 不同压缩器压缩效果**
 
 | 数据集 | PADOC | ScalaTrace | TraceZip | gzip_json | raw_json |
 |---|---:|---:|---:|---:|---:|
-| `leworldmodel_full` | 23.57x | 60.97x | 32.76x | 21.31x | 1.21x |
-| `qwen3_full` | 26.00x | 34.30x | 26.59x | 17.71x | 1.27x |
-| `unifolm_full` | 31.00x | 82.39x | 47.50x | 27.70x | 1.25x |
-| `llama_full` | 29.18x | 34.94x | 28.24x | 21.59x | 1.30x |
+| `leworldmodel_full` | 37.17 MiB / 23.79x | 14.31 MiB / 60.97x | 28.27 MiB / 32.76x | 42.97 MiB / 21.31x | 732.79 MiB / 1.21x |
+| `qwen3_full` | 274.41 MiB / 25.79x | 208.97 MiB / 34.30x | 279.17 MiB / 26.59x | 400.09 MiB / 17.71x | 5.43 GiB / 1.27x |
+| `unifolm_full` | 739.05 MiB / 31.08x | 278.82 MiB / 82.39x | 483.62 MiB / 47.50x | 829.34 MiB / 27.70x | 18.01 GiB / 1.25x |
+| `llama_full` | 2.44 GiB / 28.72x | 2.00 GiB / 34.94x | 2.48 GiB / 28.24x | 3.24 GiB / 21.59x | 53.63 GiB / 1.30x |
 
-ScalaTrace 在 `leworldmodel_full` 和 `unifolm_full` 上明显更小，在 `qwen3_full` 和 `llama_full` 上也略优或接近。这说明若唯一目标是字节最小化，PADOC 并非总是最优。本文的核心观点不是“PADOC 压缩比最高”，而是“PADOC 在保持竞争性压缩率的同时保留结构，使分析任务可直接运行”。这一点将在后续分析和消融实验中体现。
+PADOC 的压缩比为 23.79 倍至 31.08 倍。ScalaTrace 在部分数据集上更小，说明若唯一目标是最小字节流，PADOC 并非总是最优。本文的核心观点是压缩与分析共同设计：PADOC 在保持竞争性压缩率的同时保留模板列、rank 树和 CPU-GPU provenance，使后续分析能够直接在压缩表示上运行。
 
-## 6.2 核心原位分析性能
+压缩线程数扫描显示，PADOC 对大规模 trace 的压缩可并行化但会在 16 至 32 workers 附近饱和。`qwen3_full` 在 16 workers 最快，为 38.413 s；`unifolm_full` 在 16 workers 最快，为 199.686 s；`llama_full` 在 32 workers 最快，为 357.691 s。64 workers 退化说明 pipeline 后段受到 NFS、内存带宽、全局模板合并和序列化影响。
 
-表 6-3 汇总五个核心任务在 PADOC 上的分析时间。Read + deserialize 是加载 zstd/msgpack artifact 并构造 `CompressedTrace` 的时间；Max analyze time 是五个任务中最慢任务的纯分析时间；Total time range 是各任务端到端时间范围。
+## 6.2 文件存储拆解
 
-**表 6-3 PADOC 核心分析任务性能**
+表 6-2 展示最终 PADOC artifact 的 on-disk region breakdown。每个 region 独立序列化并 zstd 压缩后统计，因此该表是贡献剖析，不要求各列加和等于 artifact 大小。
 
-| 数据集 | Read + deserialize | Max analyze time | 最慢任务 | Total time range | Peak RSS |
-|---|---:|---:|---|---:|---:|
-| `leworldmodel_full` | 1.460 s | 0.446 s | `layer_rank_balance` | 1.462-1.905 s | 0.55 GiB |
-| `qwen3_full` | 11.659 s | 5.948 s | `layer_compute_comm_overlap` | 11.672-17.607 s | 5.04 GiB |
-| `unifolm_full` | 37.138 s | 8.605 s | `layer_compute_comm_overlap` | 37.173-45.743 s | 14.24 GiB |
-| `llama_full` | 109.766 s | 59.063 s | `layer_compute_comm_overlap` | 109.858-168.829 s | 34.32 GiB |
+**表 6-2 PADOC on-disk region breakdown**
 
-结果显示，PADOC 能够在单进程中加载最大 2.40 GiB 的 `llama_full` artifact，并完成五个核心任务。端到端时间主要由 artifact load 和 deserialize 决定；模板级 `operator_hotspot` 在 `llama_full` 上仅需 0.091 s 分析时间，`rank_load_balance` 需 2.074 s，而三个 layer-aware 任务更慢，尤其 `layer_compute_comm_overlap` 需 59.063 s。这符合第 4 章复杂度分析：layer-aware overlap 需要沿 CPU-GPU link 收集 kernel，并对区间进行合并。
+| 数据集 | Artifact | ts | dur | ids/pids/streams | name nums | args | tree + refs |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `leworldmodel_full` | 37.17 MiB | 4.50 MiB | 0.32 MiB | 0.04 MiB | 0.05 MiB | 19.55 MiB | 24.96 MiB |
+| `qwen3_full` | 274.41 MiB | 119.69 MiB | 13.81 MiB | 0.03 MiB | 0.32 MiB | 42.71 MiB | 193.61 MiB |
+| `unifolm_full` | 739.05 MiB | 137.66 MiB | 6.36 MiB | 3.66 MiB | 0.89 MiB | 336.07 MiB | 497.06 MiB |
+| `llama_full` | 2.44 GiB | 1.00 GiB | 96.80 MiB | 146.32 MiB | 2.59 MiB | 281.57 MiB | 1.78 GiB |
 
-这一结果支持两个结论。第一，结构化压缩并未阻止大规模 trace 的单 artifact 分析，即使最大数据集有 1024 rank 和 3.01 亿事件。第二，分析任务之间的成本差异与访问模式一致：模板聚合最快，rank tree walk 次之，层级 GPU attribution 和 overlap 最重。
+表 6-3 给出若干关键 region 的 msgpack 到 zstd 压缩比。`llama_full` 的 timestamp zstd 后仍有 1.00 GiB，说明时间戳是主要磁盘开销之一；同时 tree + refs 在最大数据集上贡献约 1.78 GiB，说明结构化表示本身也是重要成本。
 
-## 6.3 CPU-GPU kernel link 消融
+**表 6-3 关键 region 的原始序列化大小与压缩比**
 
-为了验证 CPU-GPU kernel link 的语义作用，本文比较默认 PADOC 与 `padoc_no_kernel_links`。该消融关闭 CPU launch 与 GPU kernel 的关联边，但保留其他压缩机制。表 6-4 展示三类 layer-aware GPU 任务的可归因 kernel 引用数。
-
-**表 6-4 Kernel-link 语义消融**
-
-| 数据集 | 默认可归因 GPU refs | 默认覆盖率 | `no_kernel_links` 可归因 refs | 结果 |
-|---|---:|---:|---:|---|
-| `leworldmodel_full` | 4,637 / 29,589 | 15.67% | 0 / 29,589 | layer-aware rows disappear |
-| `qwen3_full` | 1,592,830 / 1,806,096 | 88.19% | 0 / 1,806,096 | layer-aware rows disappear |
-| `unifolm_full` | 449,519 / 7,953,432 | 5.65% | 0 / 7,953,432 | layer-aware rows disappear |
-
-`qwen3_full` 是最有代表性的例子，因为 profiler scope 暴露了较完整的重复模型结构。默认 PADOC 能将 1,592,830 个 GPU kernel 引用归因到 layer 或 repeated scope，覆盖率为 88.19%；关闭 kernel link 后，三类 layer-aware 任务的 attributed refs 和 result rows 均为 0。这说明 kernel link 并非只为加速而存在，而是定义了从 CPU 模型结构到 GPU 执行事件的语义映射。
-
-`leworldmodel_full` 和 `unifolm_full` 的覆盖率较低，主要原因是 trace 中存在更多初始化、utility 或框架级 GPU 工作，这些工作不位于清晰的重复模型 scope 下。即便如此，关闭 link 后结果行同样消失，仍验证了机制的必要性。
-
-## 6.4 内存表示分析
-
-表 6-5 展示 PADOC artifact 反序列化后的主要内存统计。
-
-**表 6-5 PADOC 内存表示**
-
-| 数据集 | Templates | Constant cols | i32 cols | i64 cols | Accounted in-memory |
-|---|---:|---:|---:|---:|---:|
-| `leworldmodel_full` | 4,094 | 1,748 | 6,511 | 0 | 0.28 GiB |
-| `qwen3_full` | 5,498 | 4,880 | 6,194 | 0 | 2.53 GiB |
-| `unifolm_full` | 16,897 | 5,147 | 28,909 | 0 | 6.72 GiB |
-| `llama_full` | 312 | 4 | 716 | 0 | 22.10 GiB |
-
-所有数据集最终都没有 `i64` 数值列。时间戳经过每 rank 起点归一化后均可放入 `i32`，常量列进一步压缩了重复字段。这解释了为什么内存中不再由原始 `i64` 数组主导。
-
-`llama_full` 的 accounted in-memory 为 22.10 GiB，而进程 peak RSS 为 34.32 GiB。二者差异来自反序列化、zstd 缓冲、allocator 碎片、临时结构和分析中间状态。对论文而言，22.10 GiB 是更能体现核心表示的数据，因为它排除了部分工程实现和运行时开销；34.32 GiB 则代表真实进程峰值。本文在正文中同时报告二者，但强调工程优化如 lazy loading 或 mmap 不改变结构化压缩的核心思想。
-
-## 6.5 磁盘存储拆解
-
-表 6-6 展示各数据集 artifact 的主要 on-disk 贡献区域。
-
-**表 6-6 On-disk storage breakdown**
-
-| 数据集 | Artifact | 主要贡献区域 |
-|---|---:|---|
-| `leworldmodel_full` | 37.52 MiB | args columns 20.50 MB, node instance refs 13.57 MB, rank node tree 12.95 MB, timestamp columns 4.71 MB |
-| `qwen3_full` | 272.23 MiB | timestamp columns 125.50 MB, node instance refs 100.64 MB, rank node tree 100.15 MB, args columns 44.78 MB |
-| `unifolm_full` | 741.08 MiB | args columns 352.40 MB, node instance refs 264.15 MB, rank node tree 258.25 MB, timestamp columns 144.34 MB |
-| `llama_full` | 2.40 GiB | timestamp columns 1.07 GB, rank node tree 946.11 MB, node instance refs 925.15 MB, args columns 295.25 MB |
-
-对最大数据集，timestamp columns、rank node tree 和 node instance refs 是主要贡献区域。详细拆解见表 6-7。
-
-**表 6-7 `llama_full` 主要 on-disk 区域**
-
-| Region | zstd bytes | Contribution |
-|---|---:|---:|
-| `ts_columns` | 1,073,867,885 | 41.7% |
-| `rank_node_tree` | 946,110,875 | 36.8% |
-| `node_instance_refs` | 925,145,515 | 35.9% |
-| `args_columns` | 295,247,430 | 11.5% |
-| `ids_pids_phases_streams` | 153,426,779 | 6.0% |
-| `dur_columns` | 101,498,433 | 3.9% |
-| `name_nums` | 2,715,745 | 0.1% |
-
-表中 contribution 不应简单相加到 100%，因为该 breakdown 是对各 region 独立编码后的贡献估计，不是最终 zstd stream 的精确分区。该结果说明，时间戳在磁盘上确实占较大比例。未来可以尝试分段线性预测加残差编码，将残差从 `i32` 降至 `i16` 或 `i8`；但经过 zstd 后是否仍能获得显著收益需要实测。若残差编码破坏了 zstd 对连续模式的识别，最终 artifact 可能未必更小。因此本文不将该优化作为当前贡献，而列为未来工作。
-
-## 6.6 存储和分析消融
-
-PADOC 提供多种 ablation preset，包括关闭结构压缩、关闭 anchor matching、关闭 SLP、关闭参数去重、关闭 kernel link、关闭 name pattern 和 minimal。表 6-8 汇总存储消融。
-
-**表 6-8 存储消融摘要**
-
-| 数据集 | 默认 PADOC | 最小 preset | 最大 preset | 范围 |
-|---|---:|---:|---:|---|
-| `leworldmodel_full` | 37.5 MiB / 23.57x | `padoc_minimal`, 36.0 MiB / 24.54x | `padoc_no_args_dedup`, 37.6 MiB / 23.55x | narrow |
-| `qwen3_full` | 272.2 MiB / 25.99x | `padoc_no_kernel_links`, 259.9 MiB / 27.23x | `padoc_no_anchor`, 275.5 MiB / 25.69x | narrow |
-| `unifolm_full` | 741.1 MiB / 30.99x | `padoc_minimal`, 672.5 MiB / 34.16x | `padoc_no_args_dedup`, 743.0 MiB / 30.91x | moderate |
-
-部分 minimal preset 在磁盘上更小。这并不否定 PADOC 设计，反而说明“最小字节流”和“分析友好表示”不是同一个目标。表 6-9 展示 `operator_hotspot` 的分析消融例子。
-
-**表 6-9 `operator_hotspot` 分析消融示例**
-
-| 数据集 | Preset | Artifact | Deserialize/decompress | Analyze | Total | RSS |
-|---|---|---:|---:|---:|---:|---:|
-| `leworldmodel_full` | default | 37.5 MiB | 1.4287 s | 0.0024 s | 1.4853 s | 0.55 GiB |
-| `leworldmodel_full` | minimal | 36.0 MiB | 2.5881 s | 0.0026 s | 2.6379 s | 1.40 GiB |
-| `qwen3_full` | default | 272.2 MiB | 11.1339 s | 0.0100 s | 11.5418 s | 5.04 GiB |
-| `qwen3_full` | minimal | 265.5 MiB | 19.2806 s | 0.0103 s | 19.6071 s | 10.60 GiB |
-| `unifolm_full` | default | 741.1 MiB | 35.0344 s | 0.0287 s | 36.2310 s | 14.24 GiB |
-| `unifolm_full` | minimal | 672.5 MiB | 72.7825 s | 0.0284 s | 73.6399 s | 41.35 GiB |
-
-在三个数据集上，minimal 虽可能更小，但加载更慢且内存更高。例如 `unifolm_full` default 的 RSS 为 14.24 GiB，minimal 为 41.35 GiB。原因是 minimal 去掉部分结构化和紧凑化机制后，虽然 zstd 后字节数下降，但反序列化时需要更大的运行时对象或更低效的访问路径。该结果支持本文的 co-design 观点：PADOC 的目标是压缩表示与分析性能的整体优化，而不是单独最小化磁盘大小。
-
-## 6.7 与历史 baseline 分析速度比较
-
-早期实验比较了四个任务在 PADOC 和 baseline 上的端到端速度：`operator_hotspot`、`stream_load_balance`、`layer_operator_balance` 和 `rank_load_balance`。虽然其中三个任务不再作为最终核心任务，但结果仍可作为背景证据，说明 PADOC 的模板和树表示相较 reconstruct-then-scan baseline 有优势。
-
-**表 6-10 历史任务端到端 speedup**
-
-| 数据集 | operator_hotspot | stream_load_balance | layer_operator_balance | rank_load_balance |
+| 数据集 | ts msgpack / zstd / ratio | dur msgpack / zstd / ratio | args msgpack / zstd / ratio | tree+refs msgpack / zstd / ratio |
 |---|---:|---:|---:|---:|
-| `leworldmodel_full` | 2.6x | 2.0x | 2.3x | 2.0x |
-| `qwen3_full` | 2.2x | 1.6x | 1.9x | 1.7x |
-| `unifolm_full` | 3.0x | 2.3x | 2.6x | 2.3x |
-| `llama_full` | 4.0x | 3.0x | 3.5x | 3.2x |
+| `leworldmodel_full` | 15.54 / 4.50 MiB / 3.46x | 3.26 / 0.32 MiB / 10.07x | 50.73 / 19.55 MiB / 2.59x | 249.10 / 24.96 MiB / 9.98x |
+| `qwen3_full` | 161.15 / 119.69 MiB / 1.35x | 33.66 / 13.81 MiB / 2.44x | 272.99 / 42.71 MiB / 6.39x | 1877.09 / 193.61 MiB / 9.70x |
+| `unifolm_full` | 382.20 / 137.66 MiB / 2.78x | 69.46 / 6.36 MiB / 10.91x | 1269.92 / 336.07 MiB / 3.78x | 3340.31 / 497.06 MiB / 6.72x |
+| `llama_full` | 1435.98 / 1024.12 MiB / 1.40x | 247.47 / 96.80 MiB / 2.56x | 1942.74 / 281.57 MiB / 6.90x | 12973.13 / 1824.24 MiB / 7.11x |
 
-若只看 `llama_full` 的 analyze-only 时间，`operator_hotspot` 为 0.082 s，对比最佳 baseline 106.69 s，约 1,301 倍；`rank_load_balance` 为 2.086 s，对比最佳 baseline 19.30 s，约 9.3 倍。`stream_load_balance` analyze-only 没有明显优势，因为它本身接近逐 kernel 聚合，不能充分利用模板结构。这也解释了为什么最终论文不再将 stream balance 作为核心任务。
+## 6.3 常驻内存拆解
 
-本文不会将表 6-10 作为新 layer-aware GPU 任务的跨 compressor 结论，因为 baseline 尚未实现等价的 CPU-GPU attribution。最终核心证据是表 6-3 的 PADOC 原位可扩展性和表 6-4 的结构语义消融。
+磁盘文件与分析常驻内存的差距来自两个事实。第一，artifact 在磁盘上经过 zstd 压缩，而内存中需要可随机访问的列、树节点和向量。第二，Rust 对象、`Vec` 元数据、capacity、哈希结构和 allocator 会产生运行时开销。表 6-4 只统计加载后压缩表示自身的 accounted resident size，不包含 transient load buffer。
 
-## 6.8 GPU 数扩展性
+**表 6-4 PADOC resident representation breakdown**
 
-为了观察 rank 数增长时的行为，实验从 `llama_full` 中抽取不同 GPU 数的子集，并使用 32 workers 压缩。结果见表 6-11。
+| 数据集 | Accounted resident | ts | dur | id/pid/stream | node storage | args storage |
+|---|---:|---:|---:|---:|---:|---:|
+| `leworldmodel_full` | 0.237 GiB | 0.013 GiB | 0.012 GiB | 0.000 GiB | 0.160 GiB | 0.049 GiB |
+| `qwen3_full` | 1.899 GiB | 0.126 GiB | 0.096 GiB | 0.044 GiB | 1.124 GiB | 0.488 GiB |
+| `unifolm_full` | 4.678 GiB | 0.299 GiB | 0.264 GiB | 0.308 GiB | 2.054 GiB | 1.697 GiB |
+| `llama_full` | 14.375 GiB | 1.122 GiB | 0.770 GiB | 0.843 GiB | 7.679 GiB | 2.535 GiB |
+
+所有最终 artifact 的数值列均被压缩为常量或 `i32`，`i64` 列数量为 0。以 `llama_full` 为例，accounted resident 为 14.375 GiB，其中 node storage 为 7.679 GiB，是最大组成部分；时间戳列为 1.122 GiB，并不是唯一主导项。进程级 peak RSS 在原始日志中作为工程诊断保留，但论文主指标采用 accounted resident representation，因为它排除了 transient load buffer 和 allocator 行为的干扰。
+
+## 6.4 核心原位分析性能
+
+表 6-5 展示五个核心任务在最终 PADOC artifact 上的端到端时间。加载到内存时间定义为 `read_secs + decompress_secs`，分析时间是任务本身的时间。
+
+**表 6-5 核心任务总体性能**
+
+| 数据集 | Artifact | 加载到内存 | 最长分析时间 | 最慢任务 | 端到端范围 | Resident |
+|---|---:|---:|---:|---|---:|---:|
+| `leworldmodel_full` | 37.17 MiB | 3.075 s | 0.567 s | `layer_kernel_hotspot` | 3.096-3.641 s | 0.237 GiB |
+| `qwen3_full` | 274.41 MiB | 14.021 s | 9.126 s | `layer_compute_comm_overlap` | 14.147-23.146 s | 1.899 GiB |
+| `unifolm_full` | 739.05 MiB | 87.547 s | 12.920 s | `layer_kernel_hotspot` | 88.070-100.468 s | 4.678 GiB |
+| `llama_full` | 2.44 GiB | 133.878 s | 92.393 s | `layer_compute_comm_overlap` | 133.992-226.272 s | 14.375 GiB |
+
+表 6-6 展示两个代表数据集的单任务 breakdown。模板级热点只需要遍历模板和持续时间列；rank 负载需要遍历 rank tree；三个 layer-aware 任务需要从 CPU scope 沿 CPU-GPU link 收集 GPU kernel，其中 overlap 还需要区间排序和合并。
+
+**表 6-6 代表数据集的单任务时间**
+
+| 数据集 | 任务 | 加载到内存 | 分析 | 端到端 |
+|---|---|---:|---:|---:|
+| `qwen3_full` | `operator_hotspot` | 14.021 s | 0.126 s | 14.147 s |
+| `qwen3_full` | `rank_load_balance` | 14.021 s | 0.387 s | 14.408 s |
+| `qwen3_full` | `layer_kernel_hotspot` | 14.021 s | 3.089 s | 17.110 s |
+| `qwen3_full` | `layer_compute_comm_overlap` | 14.021 s | 9.126 s | 23.146 s |
+| `qwen3_full` | `layer_rank_balance` | 14.021 s | 5.336 s | 19.357 s |
+| `llama_full` | `operator_hotspot` | 133.878 s | 0.114 s | 133.992 s |
+| `llama_full` | `rank_load_balance` | 133.878 s | 3.184 s | 137.063 s |
+| `llama_full` | `layer_kernel_hotspot` | 133.878 s | 23.389 s | 157.267 s |
+| `llama_full` | `layer_compute_comm_overlap` | 133.878 s | 92.393 s | 226.272 s |
+| `llama_full` | `layer_rank_balance` | 133.878 s | 42.084 s | 175.962 s |
+
+## 6.5 与 baseline 的分析速度对比
+
+由于 ScalaTrace、TraceZip 和 gzip_json 不保留等价的 CPU-GPU layer attribution 结构，本文只在两个可公平比较的 common tasks 上进行跨压缩器速度比较：`operator_hotspot` 和 `rank_load_balance`。表 6-7 给出小到中等数据集的完整数值，列中格式为 `加载到内存 / 分析 / 端到端`。
+
+**表 6-7 Common-task cross-compressor timing**
+
+| 数据集 | 任务 | PADOC | raw_json | gzip_json | ScalaTrace | TraceZip |
+|---|---|---:|---:|---:|---:|---:|
+| `leworldmodel_full` | `operator_hotspot` | 1.465 / 0.003 / 1.468 s | 10.273 / 2.229 / 12.502 s | 11.894 / 0.904 / 12.798 s | 2.965 / 0.917 / 3.882 s | 2.995 / 0.850 / 3.845 s |
+| `leworldmodel_full` | `rank_load_balance` | 1.465 / 0.031 / 1.496 s | 10.273 / 0.146 / 10.418 s | 11.894 / 0.038 / 11.933 s | 2.965 / 0.037 / 3.002 s | 2.995 / 0.037 / 3.032 s |
+| `qwen3_full` | `operator_hotspot` | 13.469 / 0.014 / 13.483 s | 93.636 / 17.164 / 110.800 s | 107.113 / 6.798 / 113.911 s | 22.123 / 6.890 / 29.013 s | 24.144 / 6.822 / 30.966 s |
+| `qwen3_full` | `rank_load_balance` | 13.469 / 0.244 / 13.712 s | 93.636 / 1.028 / 94.664 s | 107.113 / 1.028 / 108.142 s | 22.123 / 1.029 / 23.153 s | 24.144 / 0.926 / 25.070 s |
+| `unifolm_full` | `operator_hotspot` | 36.403 / 0.035 / 36.439 s | 258.547 / 58.308 / 316.856 s | 312.530 / 25.592 / 338.122 s | 84.779 / 27.829 / 112.608 s | 83.366 / 26.853 / 110.220 s |
+| `unifolm_full` | `rank_load_balance` | 36.403 / 0.621 / 37.024 s | 258.547 / 2.354 / 260.901 s | 312.530 / 2.329 / 314.859 s | 84.779 / 2.672 / 87.451 s | 83.366 / 2.341 / 85.707 s |
+
+该表说明，在共同任务上 PADOC 的端到端时间明显低于 reconstruct-then-scan baselines。尤其是 `operator_hotspot`，PADOC 直接在模板列上求和，而 baseline 需要重建并扫描完整事件序列。对于新的 layer-aware GPU 任务，本文不报告跨 compressor speedup，因为如果 baseline 没有等价的 CPU-GPU attribution 结构，比较会混入语义差异。
+
+## 6.6 分析消融
+
+本节围绕四个问题做消融：结构信息、时间戳整型宽度、时间戳残差压缩，以及 CPU-GPU 映射。
+
+第一，表 6-8 对比默认 PADOC 与关闭结构合并的 `no_structural` preset。关闭结构合并后，部分 layer-aware 遍历在这些数据集上更快，因为重复 scope 被展开为更直接的节点形态；但它会显著增加常驻峰值内存，并削弱结构化表示的压缩目的。因此该实验支持的结论不是“结构合并总让每个查询更快”，而是“结构压缩降低 resident memory，并显式保留 layer/rank 访问语义”。
+
+**表 6-8 结构合并消融**
+
+| 数据集 | Preset | Artifact | Accounted resident | `rank_load_balance` 分析 | `layer_compute_comm_overlap` 分析 |
+|---|---|---:|---:|---:|---:|
+| `qwen3_full` | default | 272.23 MiB | 1.899 GiB | 0.212 s | 6.798 s |
+| `qwen3_full` | no structural | 268.48 MiB | 3.558 GiB | 0.350 s | 1.516 s |
+| `unifolm_full` | default | 741.08 MiB | 4.678 GiB | 0.634 s | 9.638 s |
+| `unifolm_full` | no structural | 692.71 MiB | 9.472 GiB | 1.246 s | 5.941 s |
+
+第二，所有最终 artifact 的时间戳列均为常量或 `i32`，没有 `i64` 列。以 `llama_full` 为例，当前 timestamp resident 为 1.122 GiB；如果按 `i64` 存储相同数量的 timestamp 值，至少需要约 2.244 GiB，resident representation 至少增加约 1.122 GiB。该估算不包含额外 vector overhead，因此是保守下界。该结果说明 per-rank timestamp normalization 和 `i32` downcast 对分析常驻内存有直接作用。
+
+第三，表 6-9 给出分段线性残差编码的列级原型结果。该原型使用整数定点斜率，保存 segment 参数和 `i8`/`i16` residual，并采用 per-column fallback。它尚未集成进主 artifact 格式，因此本文不把它作为系统主结果；但它说明时间戳和持续时间列仍有进一步降低内存的空间。
+
+**表 6-9 分段线性时间戳/持续时间原型**
+
+| 数据集 | Columns | Sampled values | Hybrid vs int64 memory | Hybrid vs int32 memory | Accepted cols | Encode time |
+|---|---:|---:|---:|---:|---:|---:|
+| `leworldmodel_full` | 128 | 3,906,828 | 7.06x | 3.53x | 128 | 0.153 s |
+| `qwen3_full` | 128 | 38,097,496 | 4.08x | 2.04x | 118 | 1.620 s |
+| `unifolm_full` | 128 | 58,928,428 | 5.87x | 2.93x | 116 | 2.333 s |
+| `llama_full` | 128 | 93,249,920 | 4.04x | 2.02x | 126 | 4.087 s |
+
+第四，表 6-10 展示 CPU-GPU 映射消融。`no_kernel_links` 删除 provenance link 后，当前 layer-aware in-situ 任务无法直接把 GPU kernel 归因到 CPU layer，结果行为 0。另一个补充实验在默认 artifact 上不直接使用保存的 GPU instance 指针，而是运行时构建 `(rank, correlation) -> GPU kernel` 映射并动态查询。该路径在 `qwen3_full` 上可恢复接近默认的覆盖率，但需要额外建立映射，且对 correlation id 的重复和作用域更敏感。这个实验说明：CPU-GPU link 的价值不只是可能加速，更重要的是把分析所需的 provenance 关系稳定地固化在压缩结构中。
+
+**表 6-10 CPU-GPU mapping 消融**
+
+| 数据集 | 方法 | `layer_kernel_hotspot` coverage | `layer_compute_comm_overlap` coverage | 备注 |
+|---|---|---:|---:|---|
+| `qwen3_full` | default link | 1,592,830 / 1,806,096 | 1,592,830 / 1,806,096 | 直接沿 link 访问 |
+| `qwen3_full` | no kernel links | 0 / 1,806,096 | 0 / 1,806,096 | 当前原位任务无法归因 |
+| `qwen3_full` | dynamic correlation lookup | 1,588,915 / 1,806,096 | 1,588,915 / 1,806,096 | 需额外构建 correlation map |
+
+## 6.7 扩展性
+
+GPU 数扩展性实验从 `llama_full` 抽取不同 rank 子集。结果显示 raw size 和 artifact size 随 GPU 数近似线性增长，压缩比从 1 GPU 的 25.03x 提升到 256 GPUs 的 28.97x，说明跨 rank 重复结构有助于模板和结构共享。
 
 **表 6-11 GPU 数扩展性**
 
@@ -557,48 +547,11 @@ PADOC 提供多种 ablation preset，包括关闭结构压缩、关闭 anchor ma
 | 64 | 19,544,859 | 4.55 GiB | 165.23 MiB | 28.19x | 48.408 s |
 | 256 | 75,749,224 | 17.59 GiB | 621.61 MiB | 28.97x | 115.421 s |
 
-随着 GPU 数增加，原始大小和 artifact 大小近似线性增长，压缩比从 25.03x 提升到 28.97x。这说明更多 rank 暴露了更多重复结构，有利于模板和结构共享。
+Synthetic layers 和 iterations 扫描进一步验证了重复结构增加时的趋势：layers 从 8 到 128 时事件数线性增长，压缩比保持在约 28x 至 30x；iterations 从 1 到 16 时，压缩比从 20.47x 提升到 30.42x。
 
-## 6.9 压缩线程扩展性
+## 6.8 实验结论
 
-表 6-12 展示 qwen、unifolm 和 llama 三个数据集的压缩线程扫描。
-
-**表 6-12 压缩线程数扩展性**
-
-| Workers | `qwen3_full` | `unifolm_full` | `llama_full` |
-|---:|---:|---:|---:|
-| 1 | 290.937 s | 570.182 s | 3153.696 s |
-| 2 | 159.692 s | 321.551 s | 1648.617 s |
-| 4 | 88.036 s | 200.491 s | 933.970 s |
-| 8 | 49.993 s | 203.894 s | 562.100 s |
-| 16 | 38.413 s | 199.686 s | 397.718 s |
-| 32 | 43.288 s | 206.084 s | 357.691 s |
-| 64 | 60.492 s | 206.789 s | 452.036 s |
-
-`qwen3_full` 在 16 workers 最快，`unifolm_full` 在 16 workers 附近饱和，`llama_full` 在 32 workers 最快。64 workers 退化说明压缩 pipeline 中存在不可并行阶段或共享资源瓶颈，包括 NFS 读取、内存带宽、全局模板 merge 和 zstd 序列化。
-
-## 6.10 Synthetic 扩展性
-
-Synthetic 实验改变模型 layers 和 iterations，观察重复结构增长时压缩率变化。
-
-**表 6-13 Synthetic layers / iterations**
-
-| Sweep | Values | 结果 |
-|---|---|---|
-| Layers | 8, 16, 32, 64, 128 | Events 从 1,216 线性增长到 19,456；压缩比保持在约 28x 至 30x |
-| Iterations | 1, 2, 4, 8, 16 | Events 从 304 线性增长到 4,864；压缩比从 20.47x 提升到 30.42x |
-
-结果符合预期：当重复 layer 或 iteration 增加时，模板和结构复用更充分，压缩比保持稳定或提升。Synthetic 实验不能替代真实 trace，但能验证系统对重复维度的扩展趋势。
-
-## 6.11 实验结论
-
-综合实验结果，本文得到以下结论。
-
-1. PADOC 可以将真实 AI profiler trace 压缩到 23.57x 至 31.00x，能够处理 301M events / 1024 ranks 的大规模训练 trace。
-2. PADOC 不总是字节最小，但其结构化表示支持原位分析；这是与 ScalaTrace、TraceZip 和通用压缩器的核心区别。
-3. 五个核心任务覆盖模板、rank 和 layer-aware GPU 三类访问维度。最大数据集上，任务端到端时间在 109.858 s 至 168.829 s 之间，说明压缩表示可直接用于大规模分析。
-4. Kernel-link 消融直接验证了 CPU-GPU provenance link 的必要性。关闭 link 后，layer-aware GPU 分析的可归因引用和结果行降为 0。
-5. 存储和分析消融表明，较小 artifact 不一定带来更快加载或更低内存。分析友好结构与字节压缩率之间存在可度量权衡。
+综合实验结果，本文得到以下结论。PADOC 在四个真实 AI profiler trace 上达到 23.79x 至 31.08x 压缩比；虽然不是所有数据集上的最小字节流，但保留了可查询结构。最终实现可以将 301M events / 1024 ranks 的 LLaMA trace 保存为 2.44 GiB artifact，并以 14.375 GiB accounted resident representation 完成五个核心分析任务。分析时间与访问模式一致：模板聚合最快，rank tree walk 次之，layer-aware attribution 和 overlap 最重。消融结果表明，CPU-GPU provenance link 对 layer-aware GPU 分析语义是必要结构；时间戳 `i32` downcast 已经显著降低常驻内存，而分段线性残差编码是进一步优化方向。
 
 ---
 
@@ -606,37 +559,37 @@ Synthetic 实验改变模型 layers 和 iterations，观察重复结构增长时
 
 ## 7.1 关于压缩比的解释
 
-本文不将 PADOC 描述为所有场景下压缩比最高的方法。实验中 ScalaTrace 在多个数据集上更小，尤其在重复结构规则的 trace 上优势明显。PADOC 保留 rank tree、CPU-GPU link、参数列和名称数字列，这些信息会占用额外空间。保留这些结构的目的不是压缩字节最少，而是让热点、rank、layer-aware GPU 分析能够在压缩表示上执行。
+本文不将 PADOC 描述为所有场景下压缩比最高的方法。ScalaTrace 在多个数据集上更小，尤其在重复结构规则的 trace 上优势明显。PADOC 保留 rank tree、CPU-GPU link、参数列和名称数字列，这些信息会占用额外空间。保留这些结构的目的不是压缩字节最少，而是让热点、rank、layer-aware GPU 分析能够在压缩表示上执行。
 
-因此，正确的论文论点应是：PADOC 在保持竞争性压缩率的同时，提供面向分析的结构化压缩表示；其价值通过原位分析时间、kernel-link 消融和 minimal preset 的加载/内存对比体现。
+因此，本文的核心论点是：PADOC 在保持竞争性压缩率的同时，提供面向分析的结构化压缩表示。其价值通过原位分析、存储和内存 breakdown、CPU-GPU link 消融和时间戳列消融共同体现。
 
 ## 7.2 关于层级分析覆盖率
 
-层级 GPU 分析依赖 profiler 中的 CPU scope 和 correlation 信息。如果模型代码或 profiler 没有清晰记录 layer scope，或者大量 GPU 工作发生在初始化、数据搬运、框架 utility 中，可归因覆盖率会降低。`qwen3_full` 覆盖率为 88.19%，适合作为主要展示数据；`leworldmodel_full` 和 `unifolm_full` 覆盖率较低，但仍证明 link 是必要的。
+层级 GPU 分析依赖 profiler 中的 CPU scope 和 correlation 信息。如果模型代码或 profiler 没有清晰记录 layer scope，或者大量 GPU 工作发生在初始化、数据搬运、框架 utility 中，可归因覆盖率会降低。`qwen3_full` 覆盖率为 88.19%，适合作为主要展示数据；`leworldmodel_full` 和 `unifolm_full` 覆盖率较低，但关闭 link 后结果同样消失，仍证明 provenance link 是必要机制。
 
 未来可以通过显式模型层注解、框架级 scope 规范或对 profiler output 的预处理提高覆盖率。PADOC 的结构表示可以承接这些更高质量的 annotation。
 
 ## 7.3 关于内存占用
 
-磁盘上 `llama_full` artifact 为 2.40 GiB，但加载后 peak RSS 为 34.32 GiB，accounted representation 为 22.10 GiB。这一差距来自三方面。第一，zstd/msgpack 解码需要临时缓冲。第二，Rust 对象、Vec capacity、树节点和哈希结构有运行时开销。第三，分析任务可能分配中间 map、interval 和 JSON 输出。
+最终 `llama_full` artifact 磁盘大小为 2.44 GiB，accounted resident representation 为 14.375 GiB。文件和内存相差较大的根本原因不是时间戳未压缩，而是磁盘上有 zstd 压缩，内存中则需要可直接访问的对象、向量、树节点和参数列。表 6-4 显示 `llama_full` 中 node storage 为 7.679 GiB，args storage 为 2.535 GiB，timestamp 为 1.122 GiB。
 
-本文不把这部分作为主要理论贡献，但它是系统工程中的重要问题。未来可以使用 mmap-backed column、lazy decode、arena allocation、按任务加载部分 region 或 streaming analysis 来降低峰值内存。即便如此，当前结果已经能在 256 GiB 节点上分析 1024-rank trace。
+这部分属于系统工程问题，不改变结构化压缩的核心思想。未来可以使用 mmap-backed column、lazy decode、arena allocation、按任务加载部分 region 或 streaming analysis 进一步降低常驻表示和运行时峰值。
 
 ## 7.4 关于时间戳进一步压缩
 
-On-disk breakdown 显示时间戳列在最大数据集上贡献约 1.07 GB，是重要优化对象。分段线性拟合加残差编码是一条可行路线：对单调或近线性的时间戳序列保存 segment 参数，并将残差降至 `i16` 或 `i8`。这种方法理论上可以降低内存和磁盘占用，访问时通过 segment index 做 $O(\log k)$ 或 $O(1)$ 定位。
+On-disk breakdown 显示时间戳列在最大数据集上贡献约 1.00 GiB，是重要优化对象。分段线性拟合加残差编码是一条可行路线：对单调或近线性的时间戳序列保存整数 segment 参数，并将 residual 降至 `i16` 或 `i8`。本文的列级原型已经验证该方法在 sampled columns 上可超过 2x vs `i64`，并且通常优于当前 `i32` 内存估计。
 
-但该方法未必在 zstd 后必然更优。现有 `i32` 时间戳列经过 zstd 已有较强压缩；残差编码可能引入 segment metadata，并改变字节分布。对于本文，稳妥做法是将其列为未来工作，只有在完整实现并比较 artifact size、load time 和 analysis time 后再作为结论。
+但该方法尚未进入主 artifact 格式。完整集成后还需要重新评估 artifact size、load time、analysis time 和随机访问开销，避免为了内存压缩牺牲查询性能。
 
 ## 7.5 威胁与局限
 
-本文实验仍有局限。第一，当前可用真实数据集不包含 MoE 和 ViT trace，无法验证专家路由或视觉模型结构对压缩和分析的影响。第二，新 layer-aware GPU 任务尚未对 ScalaTrace、TraceZip、gzip_json 和 raw_json 实现完全等价的 attribution baseline，因此本文不报告其跨 compressor speedup。第三，完整 1024-rank LLaMA 上的 8-preset ablation 成本较高，当前完整 ablation 主要覆盖 leworldmodel、qwen3 和 unifolm。第四，系统目前分析任务主要是单线程，layer-aware overlap 在大 trace 上仍有 59 s 分析时间，存在并行优化空间。
+本文实验仍有局限。第一，当前真实数据集不包含 MoE 和 ViT trace，无法验证专家路由或视觉模型结构对压缩和分析的影响。第二，新 layer-aware GPU 任务尚未对 ScalaTrace、TraceZip、gzip_json 和 raw_json 实现完全等价的 attribution baseline，因此本文只在 common tasks 上报告跨 compressor speedup。第三，完整 1024-rank LLaMA 上的多 preset ablation 成本较高，当前完整 ablation 主要覆盖 leworldmodel、qwen3 和 unifolm。第四，系统目前分析任务主要是单线程，`llama_full` 上 layer-aware overlap 仍需 92.393 s 纯分析时间，存在并行优化空间。
 
 这些局限不影响本文主要结论，但需要在最终论文中如实说明。
 
 ## 7.6 未来工作
 
-未来工作包括五个方向。第一，扩展数据集，加入 MoE、ViT 和更多推理服务 trace。第二，实现 lazy loading 和列级 mmap，降低加载峰值内存。第三，对 layer-aware 任务进行 rank 并行和 layer 分组并行，降低 overlap 分析时间。第四，研究时间戳残差编码、node tree delta encoding 和更紧凑的实例引用表示。第五，建立更标准的 profiler annotation 规范，使模型 layer、module、expert 和 pipeline stage 信息能够稳定进入 trace。
+未来工作包括五个方向。第一，扩展数据集，加入 MoE、ViT 和更多推理服务 trace。第二，实现 lazy loading 和列级 mmap，降低加载峰值内存。第三，对 layer-aware 任务进行 rank 并行和 layer 分组并行，降低 overlap 分析时间。第四，将分段线性 residual timestamp、node tree delta encoding 和更紧凑的实例引用表示集成进主格式。第五，建立更标准的 profiler annotation 规范，使模型 layer、module、expert 和 pipeline stage 信息能够稳定进入 trace。
 
 ---
 
@@ -644,7 +597,7 @@ On-disk breakdown 显示时间戳列在最大数据集上贡献约 1.07 GB，是
 
 本文研究大规模 AI 性能剖析轨迹的结构化压缩与原位分析问题。针对原始 JSON trace 体积大、完整重建成本高、传统压缩表示缺乏 AI 分析结构的问题，本文设计并实现 PADOC 系统。PADOC 将事件归并为模板，将实例字段保存为类型化列，并构建 rank-rooted node tree；系统显式保留 CPU launch 与 GPU kernel 的 provenance link，使 layer-aware GPU 分析可以直接在压缩表示上执行。
 
-实验在四个真实 AI 工作负载上进行，覆盖最高 301,288,116 个事件和 1024 ranks。PADOC 获得 23.57x 至 31.00x 压缩比，并在最大数据集上以 2.40 GiB artifact 支持五个核心任务的原位分析，端到端时间为 109.858 s 至 168.829 s。Kernel-link 消融显示，关闭 CPU-GPU link 后 layer-aware GPU 分析的可归因引用和结果行均降为 0，证明该结构对分析语义是必要的。存储和分析消融进一步说明，字节最小化与分析友好表示之间存在权衡，PADOC 的贡献在于两者的共同设计。
+实验在四个真实 AI 工作负载上进行，覆盖最高 301,288,116 个事件和 1024 ranks。PADOC 获得 23.79x 至 31.08x 压缩比，并在最大数据集上以 2.44 GiB artifact 支持五个核心任务的原位分析，端到端时间为 133.992 s 至 226.272 s，accounted resident representation 为 14.375 GiB。Kernel-link 消融显示，关闭 CPU-GPU link 后 layer-aware GPU 分析的可归因引用和结果行均降为 0，证明该结构对分析语义是必要的。存储和分析消融进一步说明，字节最小化与分析友好表示之间存在权衡，PADOC 的贡献在于两者的共同设计。
 
 总体而言，本文证明了面向分析的结构化压缩是处理大规模 AI profiler trace 的有效路线。PADOC 不是单纯的文件压缩器，而是将压缩后的 artifact 作为可查询数据结构，为模型层级瓶颈定位、rank 负载分析和大规模离线性能诊断提供基础。
 
@@ -670,7 +623,7 @@ On-disk breakdown 显示时间戳列在最大数据集上贡献约 1.07 GB，是
 
 [9] 清华大学图书馆. 本科生论文写作指南[EB/OL]. https://lib.tsinghua.edu.cn/info/1073/1978.htm.
 
-[10] PADOC 项目实验结果汇总. `results/remaining/paper_results_summary.md`, 2026.
+[10] PADOC 项目最终实验结果汇总. `results/remaining/final_paper/final_experiment_results.md`, 2026.
 
 ---
 
@@ -712,10 +665,12 @@ On-disk breakdown 显示时间戳列在最大数据集上贡献约 1.07 GB，是
 
 | 文件 | 内容 |
 |---|---|
-| `results/remaining/paper_results_summary.md` | 论文结果总表与解释 |
-| `results/remaining/core_layer_analysis.tsv` | 五个核心任务在四个数据集上的 PADOC 分析时间 |
+| `results/remaining/final_paper/final_experiment_results.md` | 最终论文结果总表与解释 |
+| `results/remaining/final_paper/core_layer_analysis_sparse_v7.tsv` | 五个核心任务在四个数据集上的最终 PADOC 分析时间 |
+| `results/remaining/final_paper/on_disk_breakdown_sparse_v7.txt` | 最终 artifact 的磁盘和常驻内存拆解 |
+| `results/remaining/final_paper/no_structural_core_ablation.tsv` | 结构信息消融 |
+| `results/remaining/final_paper/dynamic_kernel_mapping_ablation.tsv` | CPU-GPU 映射动态查找消融 |
 | `results/remaining/core_kernel_link_coverage.tsv` | kernel-link 语义消融覆盖率 |
-| `results/remaining/core_kernel_link_ablation.tsv` | kernel-link 消融 timing |
 | `results/remaining/on_disk_breakdown.txt` | artifact on-disk 区域拆解 |
 | `results/remaining/ablation_storage_from_artifacts.tsv` | 存储消融 |
 | `results/remaining/ablation_analyze.tsv` | 分析消融 |
@@ -747,9 +702,9 @@ scripts/analyze_llama.sh
 
 实验汇总中记录的数据质量检查包括：
 
-1. `padoc_5task_analysis.tsv` 为 20 行，对应历史 4 datasets x 5 tasks。
-2. `ablation_analyze.tsv` 为 120 行，对应 3 datasets x 8 presets x 5 tasks。
-3. `core_layer_analysis.tsv` 为 20 行，对应 4 datasets x 5 current core tasks。
+1. `core_layer_analysis_sparse_v7.tsv` 为 20 行，对应 4 datasets x 5 current core tasks。
+2. `on_disk_breakdown_sparse_v7.txt` 包含 4 个最终 sparse-slot artifact 的磁盘和常驻内存拆解。
+3. `no_structural_core_ablation.tsv` 为 30 行，对应 3 datasets x 2 presets x 5 tasks。
 4. `core_kernel_link_coverage.tsv` 为 18 行，对应 3 datasets x 2 presets x 3 layer-aware tasks。
 
 ---

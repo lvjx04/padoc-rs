@@ -24,6 +24,7 @@
 //! * [`storage_breakdown`], [`tree_stats`] — paper-side profiling helpers
 
 pub mod analysis;
+pub mod arena;
 pub mod baselines;
 pub mod bench;
 pub mod compressor;

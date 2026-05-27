@@ -1,0 +1,16 @@
+dataset	compressor	events	peak_rss_kb	peak_rss_gib	artifact_bytes	note
+leworldmodel_full	padoc	3469389	640508	0.61	38979996	full dataset in-situ
+leworldmodel_full	raw_json	3469389	9432952	9.00	732791857	full dataset decompressed
+leworldmodel_full	gzip_json	3469389	9474284	9.04	42966254	full dataset decompressed
+leworldmodel_full	scalatrace	3469389	3203660	3.06	14314236	full dataset decompressed
+leworldmodel_full	tracezip	3469389	3286936	3.13	28268761	full dataset decompressed
+qwen3_full	padoc	33813574	4707984	4.49	287737929	full dataset in-situ
+qwen3_full	raw_json	33813574	85926196	81.95	5432657358	full dataset decompressed
+qwen3_full	gzip_json	33813574	86233492	82.24	400086361	full dataset decompressed
+qwen3_full	scalatrace	33813574	25727084	24.53	208966859	full dataset decompressed
+qwen3_full	tracezip	33813574	25729176	24.53	279171695	full dataset decompressed
+unifolm_full	padoc	80223071	16053928	15.31	774945231	full dataset in-situ
+unifolm_full	gzip_json	80223071	244482292	233.15	869627908	full dataset decompressed
+llama_full	padoc	301288116	30598652	29.18	2614795618	full 1024-rank in-situ
+llama_full	raw_json	316746	838808	0.80	60070912	single rank (×1024 for full)
+llama_full	gzip_json	316746	844640	0.81	3706499	single rank (×1024 for full)

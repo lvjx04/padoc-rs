@@ -15,7 +15,7 @@ unifolm_full	gzip_json	80223071	244482292	233.15	869627908	full dataset decompre
 unifolm_full	scalatrace	80223071	74845244	71.38	290357765	full dataset decompressed
 unifolm_full	tracezip	80223071	76439988	72.90	508612748	full dataset decompressed
 llama_full	padoc	301288116	30598652	29.18	2614795618	full 1024-rank in-situ
-llama_full	raw_json	301288116	858843136	819.02	-	per-rank 838808 KB × 1024 (ranks independent, no sharing)
-llama_full	gzip_json	301288116	864911360	824.81	-	per-rank 844640 KB × 1024 (ranks independent, no sharing)
-llama_full	scalatrace	301288116	265789440	253.47	-	per-rank 259560 KB × 1024 (ranks independent, no sharing)
-llama_full	tracezip	301288116	270407168	257.88	-	per-rank 263952 KB × 1024 (ranks independent, no sharing)
+llama_full	raw_json	301288116	858843136	819.02	-	per-rank 838808 KB × 1024 (no cross-rank sharing in raw)
+llama_full	gzip_json	301288116	864911360	824.81	-	per-rank 844640 KB × 1024 (no cross-rank sharing in raw)
+llama_full	scalatrace	301288116	227347120	216.84	2136488816	full cross-rank artifact, measured
+llama_full	tracezip	301288116	229325056	218.73	2644857324	full cross-rank artifact, measured

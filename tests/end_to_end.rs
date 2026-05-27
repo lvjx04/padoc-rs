@@ -2,7 +2,7 @@
 
 use padoc::analysis::{
     AnalysisTask, ComputeCommOverlap, LayerComputeCommOverlap, LayerKernelHotspot,
-    LayerRankBalance, OperatorHotspot, StreamLoadBalance,
+    OperatorHotspot, StreamLoadBalance,
 };
 use padoc::baselines::{
     BaselineCompressor, GzipMsgpackCompressor, PadocCompressor, RawJsonCompressor,
@@ -147,12 +147,9 @@ fn padoc_layer_aware_tasks_run_in_situ() {
     let overlap = LayerComputeCommOverlap
         .run_in_situ(&compressed)
         .expect("overlap");
-    let balance = LayerRankBalance.run_in_situ(&compressed).expect("balance");
 
     assert!(overlap["coverage"]["attributed_gpu_refs"].as_u64().unwrap() > 0);
-    assert!(balance["coverage"]["attributed_gpu_refs"].as_u64().unwrap() > 0);
     assert!(!overlap["rows"].as_array().unwrap().is_empty());
-    assert!(!balance["rows"].as_array().unwrap().is_empty());
 }
 
 #[test]

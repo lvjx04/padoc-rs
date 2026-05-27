@@ -1,21 +1,25 @@
-//! Export ts column data for selected templates from a compressed artifact.
+//! Export per-rank ts column data for SLP visualization.
+//!
+//! Loads a single rank file, compresses it with PADoC, then exports ts columns
+//! for selected templates. This gives clean per-rank data where ts values are
+//! naturally piecewise-linear (events sorted by time within one rank).
 //!
 //! Usage:
-//!   cargo run --release --example export_ts_for_plot -- <artifact.zst> [--top N]
+//!   cargo run --release --example export_ts_for_plot -- <rank_file.json> [--top N]
 //!
-//! Outputs CSV to stdout with columns: template_name, instance_index, ts_value, fitted_value, residual
-//! Selects the top-N templates by instance count (default: 5).
+//! Outputs CSV: template_id, template_name, instance_count, index, ts_value, segment_id, segment_start, segment_step
 
+use padoc::compressor::{CompressorConfig, TemplateCompressor};
 use padoc::event::{NumColumn, Template};
 use padoc::slp::SlpColumn;
-use padoc::trace::CompressedTrace;
+use padoc::trace::Trace;
 use std::env;
 use std::path::Path;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: export_ts_for_plot <artifact.zst> [--top N]");
+        eprintln!("usage: export_ts_for_plot <rank_file.json> [--top N]");
         std::process::exit(1);
     }
     let path = Path::new(&args[1]);
@@ -31,25 +35,23 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    eprintln!("Loading artifact: {}", path.display());
-    let ct = CompressedTrace::read_from_path(path)?;
+    eprintln!("Loading trace: {}", path.display());
+    let trace = Trace::from_file(path)?;
+    eprintln!("  events: {}", trace.event_count());
 
-    // Collect templates with their instance counts and ts columns
+    eprintln!("Compressing...");
+    let mut compressor = TemplateCompressor::with_config(CompressorConfig::default());
+    let compressed = compressor.compress(&trace)?;
+    eprintln!("  templates: {}", compressed.templates.len());
+
+    // Collect CPU templates with sufficient instances
     let mut candidates: Vec<(usize, &str, &NumColumn)> = Vec::new();
-    for (idx, tmpl) in ct.templates.iter().enumerate() {
+    for (idx, tmpl) in compressed.templates.iter().enumerate() {
         match tmpl {
-            Template::Cpu(t) => {
-                let count = t.ts.len();
-                if count >= 100 {
-                    candidates.push((idx, &t.name_pattern, &t.ts));
-                }
+            Template::Cpu(t) if t.ts.len() >= 50 => {
+                candidates.push((idx, &t.name_pattern, &t.ts));
             }
-            Template::Gpu(t) => {
-                let count = t.ts.len();
-                if count >= 100 {
-                    candidates.push((idx, &t.name_pattern, &t.ts));
-                }
-            }
+            _ => {}
         }
     }
 
@@ -58,7 +60,7 @@ fn main() -> anyhow::Result<()> {
     candidates.truncate(top_n);
 
     // Output header
-    println!("template_id,template_name,instance_count,index,ts_value,fitted_value,residual,segment_id");
+    println!("template_id,template_name,instance_count,index,ts_value,segment_id,segment_start,segment_step,segment_length");
 
     for (tmpl_idx, name, col) in &candidates {
         let values = extract_i64_values(col);
@@ -66,34 +68,34 @@ fn main() -> anyhow::Result<()> {
         if n == 0 {
             continue;
         }
+        eprintln!("  template[{}] '{}': {} instances", tmpl_idx, name, n);
+
+        // Perform SLP encoding
+        let slp = SlpColumn::encode(&values);
         eprintln!(
-            "  template[{}] '{}': {} instances",
-            tmpl_idx, name, n
+            "    -> {} segments (avg length: {:.1})",
+            slp.segments.len(),
+            n as f64 / slp.segments.len() as f64
         );
 
-        // Perform SLP encoding to get segments
-        let slp = SlpColumn::encode(&values);
-
-        // For each value, compute fitted and residual
+        // Output all values with segment info
         let mut global_idx: usize = 0;
         for (seg_id, seg) in slp.segments.iter().enumerate() {
-            for local_i in 0..seg.length as usize {
-                let fitted = seg.start.wrapping_add(seg.step.wrapping_mul(local_i as i64));
-                let actual = values[global_idx];
-                let residual = actual - fitted;
-                // Output every value for small templates, subsample for large ones
-                let should_output = n <= 2000 || global_idx % (n / 2000).max(1) == 0;
+            for _local_i in 0..seg.length as usize {
+                // For large templates, subsample to ~3000 points
+                let should_output = n <= 3000 || global_idx % (n / 3000).max(1) == 0;
                 if should_output {
                     println!(
-                        "{},{},{},{},{},{},{},{}",
+                        "{},{},{},{},{},{},{},{},{}",
                         tmpl_idx,
                         escape_csv(name),
                         n,
                         global_idx,
-                        actual,
-                        fitted,
-                        residual,
-                        seg_id
+                        values[global_idx],
+                        seg_id,
+                        seg.start,
+                        seg.step,
+                        seg.length
                     );
                 }
                 global_idx += 1;

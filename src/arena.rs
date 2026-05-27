@@ -156,14 +156,18 @@ impl NodeArena {
                     len: n.instances.len() as u32,
                 };
                 let children = self.add_children(&n.children);
-                let slots_start = self.slots.len() as u32;
-                for slot in n.slots.entries() {
+                // Collect slot entries locally first — recursive add_children
+                // calls may push descendant slots into self.slots, so we must
+                // not interleave our own pushes with the recursion.
+                let local_slots: Vec<ArenaSlot> = n.slots.entries().iter().map(|slot| {
                     let slot_children = self.add_children(&slot.children);
-                    self.slots.push(ArenaSlot {
+                    ArenaSlot {
                         instance_index: slot.instance_index,
                         children: slot_children,
-                    });
-                }
+                    }
+                }).collect();
+                let slots_start = self.slots.len() as u32;
+                self.slots.extend(local_slots);
                 let slots_len = self.slots.len() as u32 - slots_start;
                 ArenaNode::SameCpu {
                     template: n.template,
@@ -377,5 +381,94 @@ mod tests {
         } else {
             panic!("root mismatch");
         }
+    }
+
+    /// Walk the arena counting visits — must equal node_count() exactly.
+    fn walk_count(arena: &NodeArena, id: NodeId, count: &mut u64) {
+        *count += 1;
+        match arena.get(id) {
+            ArenaNode::Root { children } => {
+                for &cid in arena.children(*children) {
+                    walk_count(arena, cid, count);
+                }
+            }
+            ArenaNode::Cpu { children, slots, .. } => {
+                let (c, s) = (*children, *slots);
+                for &cid in arena.children(c) {
+                    walk_count(arena, cid, count);
+                }
+                for &cid in arena.children(s) {
+                    walk_count(arena, cid, count);
+                }
+            }
+            ArenaNode::SameCpu { children, slots_start, slots_len, .. } => {
+                let (c, ss, sl) = (*children, *slots_start, *slots_len);
+                for &cid in arena.children(c) {
+                    walk_count(arena, cid, count);
+                }
+                for slot in arena.slots_slice(ss, sl) {
+                    for &cid in arena.children(slot.children) {
+                        walk_count(arena, cid, count);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn arena_walk_count_matches_node_count() {
+        // Build a tree with nested SameCpu nodes that exercise the slot-children path.
+        let inner_same_cpu = Node::SameCpu(SameCpuNode {
+            template: 10,
+            instances: vec![0, 1],
+            children: vec![
+                Node::KernelLaunch(KernelLaunchNode {
+                    cpu_template: 11, cpu_instance: 0, gpu_template: 12, gpu_instance: 0,
+                }),
+            ],
+            slots: SameCpuSlots::from_dense(vec![
+                vec![Node::Gpu(GpuNode { templates: vec![20], instances: vec![0] })],
+                vec![Node::Gpu(GpuNode { templates: vec![21], instances: vec![1] })],
+            ]),
+        });
+
+        let outer_same_cpu = Node::SameCpu(SameCpuNode {
+            template: 1,
+            instances: vec![0, 1, 2],
+            children: vec![inner_same_cpu.clone()],
+            slots: SameCpuSlots::from_dense(vec![
+                vec![inner_same_cpu.clone()],
+                vec![], // empty slot
+                vec![Node::KernelLaunch(KernelLaunchNode {
+                    cpu_template: 5, cpu_instance: 0, gpu_template: 6, gpu_instance: 0,
+                })],
+            ]),
+        });
+
+        let tree = Node::Root {
+            children: vec![
+                outer_same_cpu,
+                Node::Cpu(CpuNode {
+                    template: 100,
+                    instance: 0,
+                    children: vec![Node::KernelLaunch(KernelLaunchNode {
+                        cpu_template: 101, cpu_instance: 0, gpu_template: 102, gpu_instance: 0,
+                    })],
+                    slots: vec![],
+                }),
+            ],
+        };
+
+        let (arena, root_id) = NodeArena::from_tree(&tree);
+        let mut count = 0u64;
+        walk_count(&arena, root_id, &mut count);
+        assert_eq!(
+            count,
+            arena.node_count() as u64,
+            "walk visited {} nodes but arena has {}",
+            count,
+            arena.node_count()
+        );
     }
 }

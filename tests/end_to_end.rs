@@ -41,7 +41,13 @@ fn padoc_compress_round_trip_via_bytes() {
     let bytes = compressed.to_bytes(3).expect("serialise");
     let reloaded = CompressedTrace::from_bytes(&bytes).expect("deserialise");
     assert_eq!(reloaded.templates.len(), compressed.templates.len());
-    assert_eq!(reloaded.ranks.len(), compressed.ranks.len());
+    // After from_bytes(), node trees are dropped and arenas are materialized.
+    assert!(reloaded.arenas.is_some(), "arenas should be materialized after from_bytes");
+    assert_eq!(
+        reloaded.arenas.as_ref().unwrap().len(),
+        compressed.ranks.len(),
+        "arena rank count must match original ranks"
+    );
 }
 
 #[test]

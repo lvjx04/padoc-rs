@@ -668,10 +668,8 @@ impl CompressedTrace {
         let mut trace: CompressedTrace = rmp_serde::from_slice(&raw)?;
         drop(raw);
         trace.shrink_to_fit();
-        // TODO: arena traversal has a bug causing over-counting.
-        // Disabled until fix. Analysis uses legacy ranks path (fallback).
-        // trace.materialize_arenas();
-        // trace.drop_node_trees();
+        trace.materialize_arenas();
+        trace.drop_node_trees();
         Ok(trace)
     }
 

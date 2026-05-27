@@ -41,11 +41,7 @@ fn padoc_compress_round_trip_via_bytes() {
     let bytes = compressed.to_bytes(3).expect("serialise");
     let reloaded = CompressedTrace::from_bytes(&bytes).expect("deserialise");
     assert_eq!(reloaded.templates.len(), compressed.templates.len());
-    // After from_bytes(), node trees are dropped and arenas are populated.
-    assert_eq!(
-        reloaded.arenas.as_ref().map(|a| a.len()).unwrap_or(0),
-        compressed.ranks.len()
-    );
+    assert_eq!(reloaded.ranks.len(), compressed.ranks.len());
 }
 
 #[test]

@@ -1,9 +1,10 @@
-//! Compute/communication overlap by rank.
+//! Compute/communication overlap by rank — streaming window algorithm.
 //!
-//! For each rank, this task builds two interval lists from GPU-side kernel
-//! events: compute kernels and communication kernels.  It reports total
-//! compute time, total communication time, the union time of each class, and
-//! the intersection length between the two unions.
+//! For each rank, this task iterates GPU kernel events sorted by timestamp,
+//! maintaining a compute window and a communication window.  The overlap is
+//! accumulated incrementally without collecting all intervals into memory.
+//!
+//! Reference: PerFlow-AI `communication_analysis.py` streaming approach.
 
 use ahash::AHashMap;
 use serde_json::Value;
@@ -17,10 +18,74 @@ use crate::Result;
 #[derive(Default)]
 pub struct ComputeCommOverlap;
 
+/// Per-rank streaming overlap state.
 #[derive(Default)]
-struct RankIntervals {
-    compute: Vec<(i64, i64)>,
-    comm: Vec<(i64, i64)>,
+struct OverlapState {
+    comp_window: (i64, i64), // (start, end) of current compute window
+    comm_window: (i64, i64), // (start, end) of current comm window
+    overlap_accum: i64,
+    last_overlap_end: i64,
+    comm_total: i64,
+    compute_total: i64,
+}
+
+impl OverlapState {
+    fn push_event(&mut self, ts: i64, dur: i64, is_comm: bool) {
+        let end = ts + dur;
+        if is_comm {
+            // Update comm window
+            if ts > self.comm_window.1 {
+                self.comm_total += dur;
+                self.comm_window = (ts, end);
+            } else if end > self.comm_window.1 {
+                self.comm_total += end - self.comm_window.1;
+                self.comm_window.1 = end;
+            }
+            // Compute overlap between comp and comm windows
+            self.add_overlap();
+        } else {
+            // Update compute window
+            if ts > self.comp_window.1 {
+                self.compute_total += dur;
+                self.comp_window = (ts, end);
+            } else if end > self.comp_window.1 {
+                self.compute_total += end - self.comp_window.1;
+                self.comp_window.1 = end;
+            }
+            // Compute overlap between comp and comm windows
+            self.add_overlap();
+        }
+    }
+
+    fn add_overlap(&mut self) {
+        let overlap_start = self.comp_window.0.max(self.comm_window.0);
+        let overlap_end = self.comp_window.1.min(self.comm_window.1);
+        if overlap_start < overlap_end {
+            if overlap_start >= self.last_overlap_end {
+                self.overlap_accum += overlap_end - overlap_start;
+                self.last_overlap_end = overlap_end;
+            } else if overlap_end > self.last_overlap_end {
+                self.overlap_accum += overlap_end - self.last_overlap_end;
+                self.last_overlap_end = overlap_end;
+            }
+        }
+    }
+
+    fn to_json(&self, rank: &str) -> Value {
+        let denom = self.comm_total.min(self.compute_total);
+        let overlap_fraction = if denom > 0 {
+            self.overlap_accum as f64 / denom as f64
+        } else {
+            0.0
+        };
+        serde_json::json!({
+            "rank": rank,
+            "compute_total_us": self.compute_total,
+            "comm_total_us": self.comm_total,
+            "overlap_us": self.overlap_accum,
+            "overlap_fraction": overlap_fraction,
+        })
+    }
 }
 
 impl AnalysisTask for ComputeCommOverlap {
@@ -29,7 +94,8 @@ impl AnalysisTask for ComputeCommOverlap {
     }
 
     fn run_raw(&self, trace: &Trace) -> Result<Value> {
-        let mut by_rank: AHashMap<String, RankIntervals> = AHashMap::new();
+        // Collect GPU kernel events per rank, sort by ts, then stream through
+        let mut rank_events: AHashMap<String, Vec<(i64, i64, bool)>> = AHashMap::new();
         for (rank, _pid, _tid, _ph, events) in trace.iter_streams() {
             for ev in events {
                 if ev.cat.as_deref() != Some("kernel") {
@@ -39,16 +105,25 @@ impl AnalysisTask for ComputeCommOverlap {
                 if dur <= 0 {
                     continue;
                 }
-                let interval = (ev.ts, ev.ts + dur);
-                let entry = by_rank.entry(rank.to_string()).or_default();
-                if is_nccl_kernel(&ev.name) {
-                    entry.comm.push(interval);
-                } else {
-                    entry.compute.push(interval);
-                }
+                let is_comm = is_nccl_kernel(&ev.name);
+                rank_events
+                    .entry(rank.to_string())
+                    .or_default()
+                    .push((ev.ts, dur, is_comm));
             }
         }
-        Ok(to_json(by_rank))
+
+        let mut rows: Vec<(String, Value)> = Vec::new();
+        for (rank, mut events) in rank_events {
+            events.sort_unstable_by_key(|e| e.0);
+            let mut state = OverlapState::default();
+            for (ts, dur, is_comm) in events {
+                state.push_event(ts, dur, is_comm);
+            }
+            rows.push((rank.clone(), state.to_json(&rank)));
+        }
+        rows.sort_by(|a, b| rank_cmp(&a.0, &b.0));
+        Ok(Value::Array(rows.into_iter().map(|(_, v)| v).collect()))
     }
 
     fn supports_in_situ(&self) -> bool {
@@ -57,15 +132,17 @@ impl AnalysisTask for ComputeCommOverlap {
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
         let start = std::time::Instant::now();
-        let mut by_rank: AHashMap<String, RankIntervals> = AHashMap::new();
 
+        // Collect GPU kernel events per rank from the tree, then sort and stream
+        let mut rank_events: AHashMap<String, Vec<(i64, i64, bool)>> = AHashMap::new();
         for (rank, processes) in &compressed.ranks {
-            let entry = by_rank.entry(rank.clone()).or_default();
+            let entry = rank_events.entry(rank.clone()).or_default();
             for (_pid, threads) in processes {
                 for (_tid, phases) in threads {
                     for (_ph, root) in phases {
                         walk_gpu_instances(root, &mut |tmpl_id, inst_id| {
-                            let Some(Template::Gpu(g)) = compressed.templates.get(tmpl_id as usize)
+                            let Some(Template::Gpu(g)) =
+                                compressed.templates.get(tmpl_id as usize)
                             else {
                                 return;
                             };
@@ -77,12 +154,8 @@ impl AnalysisTask for ComputeCommOverlap {
                             if dur <= 0 {
                                 return;
                             }
-                            let interval = (ts, ts + dur);
-                            if is_nccl_kernel(&g.name_pattern) {
-                                entry.comm.push(interval);
-                            } else {
-                                entry.compute.push(interval);
-                            }
+                            let is_comm = is_nccl_kernel(&g.name_pattern);
+                            entry.push((ts, dur, is_comm));
                         });
                     }
                 }
@@ -91,12 +164,21 @@ impl AnalysisTask for ComputeCommOverlap {
         let collect_secs = elapsed_secs(start);
 
         let start = std::time::Instant::now();
-        let result = to_json(by_rank);
+        let mut rows: Vec<(String, Value)> = Vec::new();
+        for (rank, mut events) in rank_events {
+            events.sort_unstable_by_key(|e| e.0);
+            let mut state = OverlapState::default();
+            for (ts, dur, is_comm) in events {
+                state.push_event(ts, dur, is_comm);
+            }
+            rows.push((rank.clone(), state.to_json(&rank)));
+        }
+        rows.sort_by(|a, b| rank_cmp(&a.0, &b.0));
         Ok(profiled_result(
-            result,
+            Value::Array(rows.into_iter().map(|(_, v)| v).collect()),
             vec![
-                ("rank_interval_collect", collect_secs),
-                ("interval_merge_and_json", elapsed_secs(start)),
+                ("gpu_event_collect", collect_secs),
+                ("sort_and_overlap", elapsed_secs(start)),
             ],
         ))
     }
@@ -145,39 +227,6 @@ fn walk_gpu_instances(
     }
 }
 
-fn to_json(mut by_rank: AHashMap<String, RankIntervals>) -> Value {
-    let mut rows: Vec<(String, Value)> = by_rank
-        .drain()
-        .map(|(rank, intervals)| {
-            let compute_total = total_interval_len(&intervals.compute);
-            let comm_total = total_interval_len(&intervals.comm);
-            let compute_union = union_len(intervals.compute.clone());
-            let comm_union = union_len(intervals.comm.clone());
-            let overlap = overlap_len(intervals.compute, intervals.comm);
-            let denom = comm_union.min(compute_union);
-            let overlap_fraction = if denom > 0 {
-                overlap as f64 / denom as f64
-            } else {
-                0.0
-            };
-            (
-                rank.clone(),
-                serde_json::json!({
-                    "rank": rank,
-                    "compute_total_us": compute_total,
-                    "comm_total_us": comm_total,
-                    "compute_union_us": compute_union,
-                    "comm_union_us": comm_union,
-                    "overlap_us": overlap,
-                    "overlap_fraction_of_min_union": overlap_fraction,
-                }),
-            )
-        })
-        .collect();
-    rows.sort_by(|a, b| rank_cmp(&a.0, &b.0));
-    Value::Array(rows.into_iter().map(|(_, v)| v).collect())
-}
-
 fn rank_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     match (a.parse::<i64>(), b.parse::<i64>()) {
         (Ok(x), Ok(y)) => x.cmp(&y),
@@ -185,80 +234,27 @@ fn rank_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-fn total_interval_len(intervals: &[(i64, i64)]) -> i64 {
-    intervals.iter().map(|(s, e)| e.saturating_sub(*s)).sum()
-}
-
-fn union_len(mut intervals: Vec<(i64, i64)>) -> i64 {
-    if intervals.is_empty() {
-        return 0;
-    }
-    intervals.sort_unstable();
-    let mut total = 0;
-    let (mut cur_s, mut cur_e) = intervals[0];
-    for (s, e) in intervals.into_iter().skip(1) {
-        if s <= cur_e {
-            cur_e = cur_e.max(e);
-        } else {
-            total += cur_e - cur_s;
-            cur_s = s;
-            cur_e = e;
-        }
-    }
-    total + cur_e - cur_s
-}
-
-fn overlap_len(compute: Vec<(i64, i64)>, comm: Vec<(i64, i64)>) -> i64 {
-    let compute = merge_intervals(compute);
-    let comm = merge_intervals(comm);
-    let mut i = 0;
-    let mut j = 0;
-    let mut overlap = 0;
-    while i < compute.len() && j < comm.len() {
-        let start = compute[i].0.max(comm[j].0);
-        let end = compute[i].1.min(comm[j].1);
-        if end > start {
-            overlap += end - start;
-        }
-        if compute[i].1 < comm[j].1 {
-            i += 1;
-        } else {
-            j += 1;
-        }
-    }
-    overlap
-}
-
-fn merge_intervals(mut intervals: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
-    if intervals.is_empty() {
-        return intervals;
-    }
-    intervals.sort_unstable();
-    let mut out = Vec::new();
-    let (mut cur_s, mut cur_e) = intervals[0];
-    for (s, e) in intervals.into_iter().skip(1) {
-        if s <= cur_e {
-            cur_e = cur_e.max(e);
-        } else {
-            out.push((cur_s, cur_e));
-            cur_s = s;
-            cur_e = e;
-        }
-    }
-    out.push((cur_s, cur_e));
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn overlap_counts_intersection_of_unions() {
-        let compute = vec![(0, 10), (8, 20), (30, 40)];
-        let comm = vec![(5, 12), (15, 35)];
-        assert_eq!(union_len(compute.clone()), 30);
-        assert_eq!(union_len(comm.clone()), 27);
-        assert_eq!(overlap_len(compute, comm), 17);
+    fn streaming_overlap_basic() {
+        let mut state = OverlapState::default();
+        // Compute: [0, 10]
+        state.push_event(0, 10, false);
+        // Comm: [5, 15] → overlap with compute = [5, 10] = 5
+        state.push_event(5, 10, true);
+        assert_eq!(state.overlap_accum, 5);
+        assert_eq!(state.compute_total, 10);
+        assert_eq!(state.comm_total, 10);
+    }
+
+    #[test]
+    fn streaming_overlap_no_overlap() {
+        let mut state = OverlapState::default();
+        state.push_event(0, 10, false);
+        state.push_event(20, 10, true);
+        assert_eq!(state.overlap_accum, 0);
     }
 }

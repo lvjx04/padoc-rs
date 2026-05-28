@@ -266,6 +266,10 @@ fn count_args(cols: &[ArgColumn], s: &mut Stats) {
                 s.arg_vec_bytes += dict.capacity() * size_of::<String>();
                 s.arg_payload_bytes += dict.iter().map(|x| x.capacity()).sum::<usize>();
             }
+            ArgColumn::SlpI32(slp) => {
+                s.arg_value_count += slp.len();
+                s.arg_vec_bytes += slp.heap_bytes();
+            }
             ArgColumn::PerInstance(values) => {
                 s.arg_value_count += values.len();
                 s.arg_vec_bytes += values.capacity() * size_of::<serde_json::Value>();

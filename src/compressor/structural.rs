@@ -373,6 +373,9 @@ pub(crate) fn finalize_cpu_template(tmpl: &mut MergeEvent, config: &CompressorCo
         tmpl.ts.encode_slp();
         tmpl.dur.encode_slp();
         tmpl.id.encode_slp();
+        for col in tmpl.args_columns.iter_mut() {
+            col.encode_slp();
+        }
     }
 }
 
@@ -394,5 +397,8 @@ pub(crate) fn finalize_gpu_template(tmpl: &mut MergeKernelEvent, config: &Compre
         tmpl.ts.encode_slp();
         tmpl.dur.encode_slp();
         tmpl.pid.encode_slp();
+        for col in tmpl.args_columns.iter_mut() {
+            col.encode_slp();
+        }
     }
 }

@@ -303,6 +303,9 @@ fn count_arg_columns(cols: &[ArgColumn], stats: &mut CompressedStats) {
                 stats.arg_vec_bytes += dict.capacity() * size_of::<String>();
                 stats.arg_payload_bytes += dict.iter().map(|value| value.capacity()).sum::<usize>();
             }
+            ArgColumn::SlpI32(slp) => {
+                stats.arg_vec_bytes += slp.heap_bytes();
+            }
             ArgColumn::PerInstance(values) => {
                 stats.arg_vec_bytes += values.capacity() * size_of::<serde_json::Value>();
                 stats.arg_payload_bytes += values

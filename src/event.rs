@@ -567,6 +567,7 @@ pub enum ArgColumn {
     Bool(Vec<u8>),
     Str(Vec<String>),
     StrDict { dict: Vec<String>, ids: Vec<u32> },
+    SlpI32(crate::slp::SlpCompact),
     PerInstance(Vec<ArgValue>),
 }
 
@@ -580,6 +581,7 @@ impl ArgColumn {
             ArgColumn::Bool(v) => v.len(),
             ArgColumn::Str(v) => v.len(),
             ArgColumn::StrDict { ids, .. } => ids.len(),
+            ArgColumn::SlpI32(slp) => slp.len(),
             ArgColumn::PerInstance(v) => v.len(),
         }
     }
@@ -605,6 +607,9 @@ impl ArgColumn {
                     .cloned()
                     .map(serde_json::Value::String)
             }),
+            ArgColumn::SlpI32(slp) => slp
+                .get(i)
+                .map(|x| serde_json::Value::Number(serde_json::Number::from(x))),
             ArgColumn::PerInstance(v) => v.get(i).cloned(),
         }
     }
@@ -629,6 +634,7 @@ impl ArgColumn {
                 dict.shrink_to_fit();
                 ids.shrink_to_fit();
             }
+            ArgColumn::SlpI32(slp) => slp.shrink_to_fit(),
             ArgColumn::PerInstance(values) => {
                 for value in values.iter_mut() {
                     shrink_arg_value(value);
@@ -772,6 +778,20 @@ impl ArgColumn {
         }
         // Heterogeneous — keep as PerInstance but the existing storage already
         // represents that, so nothing to do.
+    }
+
+    /// SLP-encode an I32 arg column: piecewise-linear with i8/i16 residuals.
+    /// Only applies to I32 variants with enough values; others are left untouched.
+    pub fn encode_slp(&mut self) {
+        if let ArgColumn::I32(values) = self {
+            if values.len() >= 16 {
+                let i64_values: Vec<i64> = values.iter().map(|&x| x as i64).collect();
+                let slp = crate::slp::SlpCompact::encode(&i64_values);
+                if slp.heap_bytes() < values.len() * 4 {
+                    *self = ArgColumn::SlpI32(slp);
+                }
+            }
+        }
     }
 }
 

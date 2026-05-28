@@ -439,12 +439,12 @@ PADOC 的压缩比为 23.79 倍至 31.08 倍。ScalaTrace 在部分数据集上�
 
 | 数据集 | Accounted resident | ts | dur | id/pid/stream | arena (tree) | args | name_nums |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `leworldmodel_full` | 0.147 GiB | 0.013 GiB | 0.012 GiB | 0.000 GiB | 0.070 GiB | 0.049 GiB | 0.002 GiB |
-| `qwen3_full` | 1.298 GiB | 0.126 GiB | 0.096 GiB | 0.044 GiB | 0.523 GiB | 0.488 GiB | 0.021 GiB |
-| `unifolm_full` | 3.624 GiB | 0.299 GiB | 0.264 GiB | 0.275 GiB | 1.002 GiB | 1.697 GiB | 0.054 GiB |
-| `llama_full` | 10.430 GiB | 1.122 GiB | 0.770 GiB | 0.842 GiB | 3.734 GiB | 2.535 GiB | 1.426 GiB |
+| `leworldmodel_full` | 0.118 GiB | 0.007 GiB | 0.005 GiB | 0.000 GiB | 0.070 GiB | 0.033 GiB | 0.002 GiB |
+| `qwen3_full` | 1.167 GiB | 0.120 GiB | 0.050 GiB | 0.036 GiB | 0.523 GiB | 0.418 GiB | 0.021 GiB |
+| `unifolm_full` | 2.961 GiB | 0.198 GiB | 0.110 GiB | 0.251 GiB | 1.001 GiB | 1.329 GiB | 0.054 GiB |
+| `llama_full` | 8.669 GiB | 1.048 GiB | 0.371 GiB | 0.406 GiB | 3.732 GiB | 1.499 GiB | 1.425 GiB |
 
-PADOC 使用 arena 化调用树存储：将递归 `Node` 树在加载后转换为扁平 `NodeArena`（连续数组 + 索引引用），然后释放原始树。相比优化前（递归 `Vec<Node>` 存储），树结构内存降低约 57%，总 accounted resident 降低 23-38%。以 `llama_full` 为例，accounted resident 为 10.430 GiB，其中 arena (tree) 为 3.734 GiB，args 为 2.535 GiB，name_nums 为 1.426 GiB，时间戳列为 1.122 GiB。
+PADOC 使用 arena 化调用树存储：将递归 `Node` 树在加载后转换为扁平 `NodeArena`（连续数组 + 索引引用），然后释放原始树。相比优化前（递归 `Vec<Node>` 存储），树结构内存降低约 57%，总 accounted resident 降低 23-38%。以 `llama_full` 为例，accounted resident 为 8.669 GiB，其中 arena (tree) 为 3.732 GiB，args 为 1.499 GiB（SLP 压缩后），dur 为 0.371 GiB，时间戳列为 1.048 GiB，name_nums 为 1.425 GiB。SLP 分段线性拟合将 dur 和 args 的 i32 列压缩为 i8/i16 残差，在 dur 上节省 52%，在 args 上节省 41%。
 
 ## 6.4 核心原位分析性能
 
@@ -454,10 +454,10 @@ PADOC 使用 arena 化调用树存储：将递归 `Node` 树在加载后转换�
 
 | 数据集 | Artifact | 加载到内存 | 最长分析时间 | 最慢任务 | 端到端范围 | Resident |
 |---|---:|---:|---:|---|---:|---:|
-| `leworldmodel_full` | 37.17 MiB | 3.075 s | 0.455 s | `layer_compute_comm_overlap` | 3.096-3.530 s | 0.147 GiB |
-| `qwen3_full` | 274.41 MiB | 14.125 s | 5.486 s | `layer_compute_comm_overlap` | 14.136-19.611 s | 1.298 GiB |
-| `unifolm_full` | 739.05 MiB | 87.547 s | 8.346 s | `layer_compute_comm_overlap` | 87.729-95.893 s | 3.624 GiB |
-| `llama_full` | 2.44 GiB | 118.228 s | 51.121 s | `layer_compute_comm_overlap` | 118.296-169.349 s | 10.430 GiB |
+| `leworldmodel_full` | 37.17 MiB | 3.075 s | 0.455 s | `layer_compute_comm_overlap` | 3.096-3.530 s | 0.118 GiB |
+| `qwen3_full` | 274.41 MiB | 14.125 s | 5.486 s | `layer_compute_comm_overlap` | 14.136-19.611 s | 1.167 GiB |
+| `unifolm_full` | 739.05 MiB | 87.547 s | 8.346 s | `layer_compute_comm_overlap` | 87.729-95.893 s | 2.961 GiB |
+| `llama_full` | 2.44 GiB | 118.228 s | 51.121 s | `layer_compute_comm_overlap` | 118.296-169.349 s | 8.669 GiB |
 
 表 6-6 展示两个代表数据集的单任务 breakdown。模板级热点只需要遍历模板和持续时间列；rank 负载需要遍历 rank tree；layer-aware overlap 需要从 CPU scope 沿 CPU-GPU link 收集 GPU kernel 并进行区间排序和合并；GPU 气泡率通过流式窗口遍历 GPU kernel 时间线。
 
@@ -596,7 +596,7 @@ Synthetic layers 和 iterations 扫描进一步验证了重复结构增加时的
 
 ## 6.8 实验结论
 
-综合实验结果，本文得到以下结论。PADOC 在四个真实 AI profiler trace 上达到 23.79x 至 31.08x 压缩比；虽然不是所有数据集上的最小字节流，但保留了可查询结构。最终实现可以将 301M events / 1024 ranks 的 LLaMA trace 保存为 2.44 GiB artifact，并以 10.430 GiB accounted resident representation 完成四个核心分析任务。分析时间与访问模式一致：模板聚合最快，rank tree walk 次之，layer-aware attribution 和 overlap 最重。消融结果表明，CPU-GPU 映射可以在分析时由 correlation 动态重建，但显式保存映射提供了更直接的查询路径；时间戳 `i32` downcast 已经显著降低常驻内存，而分段线性残差编码是进一步优化方向。
+综合实验结果，本文得到以下结论。PADOC 在四个真实 AI profiler trace 上达到 23.79x 至 31.08x 压缩比；虽然不是所有数据集上的最小字节流，但保留了可查询结构。最终实现可以将 301M events / 1024 ranks 的 LLaMA trace 保存为 2.44 GiB artifact，并以 8.669 GiB accounted resident representation 完成四个核心分析任务。分析时间与访问模式一致：模板聚合最快，rank tree walk 次之，layer-aware attribution 和 overlap 最重。消融结果表明，CPU-GPU 映射可以在分析时由 correlation 动态重建，但显式保存映射提供了更直接的查询路径；时间戳 `i32` downcast 已经显著降低常驻内存，而分段线性残差编码是进一步优化方向。
 
 ---
 
@@ -616,7 +616,7 @@ Synthetic layers 和 iterations 扫描进一步验证了重复结构增加时的
 
 ## 7.3 关于内存占用
 
-最终 `llama_full` artifact 磁盘大小为 2.44 GiB，accounted resident representation 为 10.430 GiB。文件和内存相差较大的根本原因不是时间戳未压缩，而是磁盘上有 zstd 压缩，内存中则需要可直接访问的对象、向量、树节点和参数列。表 6-4 显示 `llama_full` 中 arena (tree) 为 3.734 GiB，args storage 为 2.535 GiB，timestamp 为 1.122 GiB。Arena 优化将树结构内存降低约 57%，是内存降低的主要贡献。
+最终 `llama_full` artifact 磁盘大小为 2.44 GiB，accounted resident representation 为 8.669 GiB。文件和内存相差较大的根本原因不是时间戳未压缩，而是磁盘上有 zstd 压缩，内存中则需要可直接访问的对象、向量、树节点和参数列。表 6-4 显示 `llama_full` 中 arena (tree) 为 3.732 GiB，args 为 1.499 GiB（SLP 压缩后），dur 为 0.371 GiB，timestamp 为 1.048 GiB。Arena 优化将树结构内存降低约 57%，SLP 分段线性压缩将 dur/args/id 列进一步压缩 41-52%。
 
 这部分属于系统工程问题，不改变结构化压缩的核心思想。未来可以使用 mmap-backed column、lazy decode、arena allocation、按任务加载部分 region 或 streaming analysis 进一步降低常驻表示和运行时峰值。
 
@@ -642,7 +642,7 @@ On-disk breakdown 显示时间戳列在最大数据集上贡献约 1.00 GiB，�
 
 本文研究大规模 AI 性能剖析轨迹的结构化压缩与原位分析问题。针对原始 JSON trace 体积大、完整重建成本高、传统压缩表示缺乏 AI 分析结构的问题，本文设计并实现 PADOC 系统。PADOC 将事件归并为模板，将实例字段保存为类型化列，并构建 rank-rooted node tree；系统显式保留 CPU launch 与 GPU kernel 的 provenance link，使 layer-aware GPU 分析可以直接在压缩表示上执行。
 
-实验在四个真实 AI 工作负载上进行，覆盖最高 301,288,116 个事件和 1024 ranks。PADOC 获得 23.79x 至 31.08x 压缩比，并在最大数据集上以 2.44 GiB artifact 支持四个核心任务的原位分析，端到端时间为 118.296 s 至 169.349 s，accounted resident representation 为 10.430 GiB。CPU-GPU 映射消融显示，运行时 correlation lookup 可以恢复接近默认的层级 GPU 覆盖率，但需要额外索引并对 correlation id 的一致性更敏感。存储和分析消融进一步说明，字节最小化与分析友好表示之间存在权衡，PADOC 的贡献在于两者的共同设计。
+实验在四个真实 AI 工作负载上进行，覆盖最高 301,288,116 个事件和 1024 ranks。PADOC 获得 23.79x 至 31.08x 压缩比，并在最大数据集上以 2.44 GiB artifact 支持四个核心任务的原位分析，端到端时间为 118.296 s 至 169.349 s，accounted resident representation 为 8.669 GiB。CPU-GPU 映射消融显示，运行时 correlation lookup 可以恢复接近默认的层级 GPU 覆盖率，但需要额外索引并对 correlation id 的一致性更敏感。存储和分析消融进一步说明，字节最小化与分析友好表示之间存在权衡，PADOC 的贡献在于两者的共同设计。
 
 总体而言，本文证明了面向分析的结构化压缩是处理大规模 AI profiler trace 的有效路线。PADOC 不是单纯的文件压缩器，而是将压缩后的 artifact 作为可查询数据结构，为模型层级瓶颈定位、rank 负载分析和大规模离线性能诊断提供基础。
 

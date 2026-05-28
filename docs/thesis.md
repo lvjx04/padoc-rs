@@ -438,16 +438,16 @@ PADOC 的压缩比为 23.79 倍至 31.08 倍。ScalaTrace 在部分数据集上�
 
 磁盘文件与分析常驻内存的差距来自两个事实。第一，artifact 在磁盘上经过 zstd 压缩，而内存中需要可随机访问的列、树节点和向量。第二，Rust 对象、`Vec` 元数据、capacity、哈希结构和 allocator 会产生运行时开销。表 6-4 只统计加载后压缩表示自身的 accounted resident size，不包含 transient load buffer。
 
-**表 6-4 PADOC resident representation breakdown**
+**表 6-4 PADOC resident representation breakdown（Arena 优化后）**
 
-| 数据集 | Accounted resident | ts | dur | id/pid/stream | node storage | args storage |
-|---|---:|---:|---:|---:|---:|---:|
-| `leworldmodel_full` | 0.237 GiB | 0.013 GiB | 0.012 GiB | 0.000 GiB | 0.160 GiB | 0.049 GiB |
-| `qwen3_full` | 1.899 GiB | 0.126 GiB | 0.096 GiB | 0.044 GiB | 1.124 GiB | 0.488 GiB |
-| `unifolm_full` | 4.678 GiB | 0.299 GiB | 0.264 GiB | 0.308 GiB | 2.054 GiB | 1.697 GiB |
-| `llama_full` | 14.375 GiB | 1.122 GiB | 0.770 GiB | 0.843 GiB | 7.679 GiB | 2.535 GiB |
+| 数据集 | Accounted resident | ts | dur | id/pid/stream | arena (tree) | args | name_nums |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `leworldmodel_full` | 0.147 GiB | 0.013 GiB | 0.012 GiB | 0.000 GiB | 0.070 GiB | 0.049 GiB | 0.002 GiB |
+| `qwen3_full` | 1.298 GiB | 0.126 GiB | 0.096 GiB | 0.044 GiB | 0.523 GiB | 0.488 GiB | 0.021 GiB |
+| `unifolm_full` | 3.624 GiB | 0.299 GiB | 0.264 GiB | 0.275 GiB | 1.002 GiB | 1.697 GiB | 0.054 GiB |
+| `llama_full` | 10.430 GiB | 1.122 GiB | 0.770 GiB | 0.842 GiB | 3.734 GiB | 2.535 GiB | 1.426 GiB |
 
-所有最终 artifact 的数值列均被压缩为常量或 `i32`，`i64` 列数量为 0。以 `llama_full` 为例，accounted resident 为 14.375 GiB，其中 node storage 为 7.679 GiB，是最大组成部分；时间戳列为 1.122 GiB，并不是唯一主导项。进程级 peak RSS 在原始日志中作为工程诊断保留，但论文主指标采用 accounted resident representation，因为它排除了 transient load buffer 和 allocator 行为的干扰。
+PADOC 使用 arena 化调用树存储：将递归 `Node` 树在加载后转换为扁平 `NodeArena`（连续数组 + 索引引用），然后释放原始树。相比优化前（递归 `Vec<Node>` 存储），树结构内存降低约 57%，总 accounted resident 降低 23-38%。以 `llama_full` 为例，accounted resident 为 10.430 GiB，其中 arena (tree) 为 3.734 GiB，args 为 2.535 GiB，name_nums 为 1.426 GiB，时间戳列为 1.122 GiB。
 
 ## 6.4 核心原位分析性能
 

@@ -112,6 +112,7 @@ fn extract_i64_values(col: &NumColumn) -> Vec<i64> {
         NumColumn::Constant { len, value } => vec![*value; *len as usize],
         NumColumn::I32(v) => v.iter().map(|x| *x as i64).collect(),
         NumColumn::I64(v) => v.clone(),
+        NumColumn::Slp(slp) => slp.decode(),
     }
 }
 

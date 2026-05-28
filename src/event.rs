@@ -120,6 +120,7 @@ pub enum NumColumn {
     },
     I32(Vec<i32>),
     I64(Vec<i64>),
+    Slp(crate::slp::SlpCompact),
 }
 
 impl NumColumn {
@@ -129,6 +130,7 @@ impl NumColumn {
             NumColumn::Constant { len, .. } => *len as usize,
             NumColumn::I32(v) => v.len(),
             NumColumn::I64(v) => v.len(),
+            NumColumn::Slp(slp) => slp.len(),
         }
     }
 
@@ -148,6 +150,7 @@ impl NumColumn {
             }
             NumColumn::I32(v) => v.get(i).map(|x| *x as i64),
             NumColumn::I64(v) => v.get(i).copied(),
+            NumColumn::Slp(slp) => slp.get(i),
         }
     }
 
@@ -161,6 +164,7 @@ impl NumColumn {
             NumColumn::Constant { len, value } => (*len as i64) * (*value),
             NumColumn::I32(v) => v.iter().map(|x| *x as i64).sum(),
             NumColumn::I64(v) => v.iter().sum(),
+            NumColumn::Slp(slp) => slp.sum_i64(),
         }
     }
 
@@ -168,6 +172,7 @@ impl NumColumn {
         match self {
             NumColumn::I32(v) => v.shrink_to_fit(),
             NumColumn::I64(v) => v.shrink_to_fit(),
+            NumColumn::Slp(slp) => slp.shrink_to_fit(),
             NumColumn::Empty | NumColumn::Constant { .. } => {}
         }
     }
@@ -178,7 +183,7 @@ impl NumColumn {
         match self {
             NumColumn::Empty => *self = NumColumn::I64(vec![v]),
             NumColumn::I64(values) => values.push(v),
-            NumColumn::I32(_) | NumColumn::Constant { .. } => {
+            NumColumn::I32(_) | NumColumn::Constant { .. } | NumColumn::Slp(_) => {
                 // Build path appends in I64 mode; compact variants only appear
                 // post-finalise.  Promote back to I64 to stay correct if ever
                 // hit.
@@ -260,6 +265,31 @@ impl NumColumn {
             // Already in i64 form — nothing to do.
             let values: Vec<i64> = (0..n).map(|i| self.get(i).unwrap_or(0)).collect();
             *self = NumColumn::I64(values);
+        }
+    }
+
+    /// SLP-encode the column: piecewise-linear with i8/i16 residuals.
+    /// Only applies to I32/I64 variants (constants and empties are already optimal).
+    pub fn encode_slp(&mut self) {
+        let values: Vec<i64> = match self {
+            NumColumn::I32(v) => v.iter().map(|&x| x as i64).collect(),
+            NumColumn::I64(v) => v.clone(),
+            // Constant/Empty/already Slp — nothing to do.
+            _ => return,
+        };
+        if values.len() < 2 {
+            return;
+        }
+        let slp = crate::slp::SlpCompact::encode(&values);
+        // Only adopt SLP if it saves memory vs current encoding.
+        let current_bytes = match self {
+            NumColumn::I32(v) => v.len() * 4,
+            NumColumn::I64(v) => v.len() * 8,
+            _ => unreachable!(),
+        };
+        let slp_bytes = slp.heap_bytes();
+        if slp_bytes < current_bytes {
+            *self = NumColumn::Slp(slp);
         }
     }
 }

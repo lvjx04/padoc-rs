@@ -369,6 +369,11 @@ pub(crate) fn finalize_cpu_template(tmpl: &mut MergeEvent, config: &CompressorCo
     tmpl.ts.compact();
     tmpl.dur.compact();
     tmpl.id.compact();
+    if config.enable_slp {
+        tmpl.ts.encode_slp();
+        tmpl.dur.encode_slp();
+        tmpl.id.encode_slp();
+    }
 }
 
 pub(crate) fn finalize_gpu_template(tmpl: &mut MergeKernelEvent, config: &CompressorConfig) {
@@ -385,4 +390,9 @@ pub(crate) fn finalize_gpu_template(tmpl: &mut MergeKernelEvent, config: &Compre
     tmpl.pid.compact();
     tmpl.stream_tid.compact();
     tmpl.ph.compact();
+    if config.enable_slp {
+        tmpl.ts.encode_slp();
+        tmpl.dur.encode_slp();
+        tmpl.pid.encode_slp();
+    }
 }

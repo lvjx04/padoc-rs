@@ -260,6 +260,7 @@ fn num_column_bytes(col: &NumColumn) -> usize {
         NumColumn::Constant { .. } => size_of::<i64>() + size_of::<u32>(),
         NumColumn::I32(values) => values.capacity() * size_of::<i32>(),
         NumColumn::I64(values) => values.capacity() * size_of::<i64>(),
+        NumColumn::Slp(slp) => slp.heap_bytes(),
     }
 }
 

@@ -210,6 +210,7 @@ fn num_column_bytes(col: &NumColumn, s: &mut Stats) -> usize {
             s.i64_num_cols += 1;
             v.capacity() * size_of::<i64>()
         }
+        NumColumn::Slp(slp) => slp.heap_bytes(),
     }
 }
 

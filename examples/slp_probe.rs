@@ -633,6 +633,7 @@ fn encoding_name(col: &NumColumn) -> &'static str {
         NumColumn::Constant { .. } => "constant",
         NumColumn::I32(_) => "i32",
         NumColumn::I64(_) => "i64",
+        NumColumn::Slp(_) => "slp",
     }
 }
 
@@ -642,6 +643,7 @@ fn sampled_current_mem_bytes(col: &NumColumn, sampled_len: usize) -> u64 {
         NumColumn::Constant { .. } => 12,
         NumColumn::I32(_) => 4_u64 * sampled_len as u64,
         NumColumn::I64(_) => 8_u64 * sampled_len as u64,
+        NumColumn::Slp(slp) => slp.heap_bytes() as u64,
     }
 }
 

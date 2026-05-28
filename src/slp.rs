@@ -101,6 +101,184 @@ impl SlpColumn {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Piecewise-linear compression with residuals (i8/i16 per-segment)
+// ---------------------------------------------------------------------------
+
+/// Per-segment residual storage: i8 when all residuals fit, otherwise i16.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ResidualStorage {
+    I8(Vec<i8>),
+    I16(Vec<i16>),
+}
+
+/// One segment of the piecewise-linear encoding with residuals.
+/// Reconstruction: `values[i] = start + slope * i + residuals[i]`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlpSegment {
+    pub start: i64,
+    pub slope: i64,
+    pub residuals: ResidualStorage,
+}
+
+impl SlpSegment {
+    pub fn len(&self) -> usize {
+        match &self.residuals {
+            ResidualStorage::I8(v) => v.len(),
+            ResidualStorage::I16(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Piecewise-linear column with i8/i16 residuals per segment.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SlpCompact {
+    pub segments: Vec<SlpSegment>,
+}
+
+impl SlpCompact {
+    /// Greedy segmentation with residual encoding.
+    ///
+    /// For each segment: slope = v[1] - v[0] (integer).
+    /// Extend while |residual| <= i16::MAX.
+    /// After segment is collected, store residuals as i8 if all fit, else i16.
+    pub fn encode(values: &[i64]) -> Self {
+        if values.is_empty() {
+            return SlpCompact { segments: Vec::new() };
+        }
+        let mut segments = Vec::new();
+        let mut i = 0;
+        while i < values.len() {
+            let start = values[i];
+            if i + 1 >= values.len() {
+                // Single-element segment: residual is 0
+                segments.push(SlpSegment {
+                    start,
+                    slope: 0,
+                    residuals: ResidualStorage::I8(vec![0]),
+                });
+                break;
+            }
+            let slope = values[i + 1] - start;
+            // Collect residuals for this segment
+            let mut residuals: Vec<i16> = Vec::new();
+            let mut j = i;
+            while j < values.len() {
+                let local_idx = (j - i) as i64;
+                let predicted = start + slope * local_idx;
+                let residual = values[j] - predicted;
+                if residual < i16::MIN as i64 || residual > i16::MAX as i64 {
+                    break;
+                }
+                residuals.push(residual as i16);
+                j += 1;
+            }
+            // If we couldn't even fit one value (shouldn't happen since residual at idx 0 is 0),
+            // force at least one value.
+            if residuals.is_empty() {
+                residuals.push(0);
+                j = i + 1;
+            }
+            // Choose i8 or i16 storage
+            let all_i8 = residuals.iter().all(|&r| r >= i8::MIN as i16 && r <= i8::MAX as i16);
+            let storage = if all_i8 {
+                ResidualStorage::I8(residuals.iter().map(|&r| r as i8).collect())
+            } else {
+                ResidualStorage::I16(residuals)
+            };
+            segments.push(SlpSegment { start, slope, residuals: storage });
+            i = j;
+        }
+        SlpCompact { segments }
+    }
+
+    /// Total number of values.
+    pub fn len(&self) -> usize {
+        self.segments.iter().map(|s| s.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Random access by global index.
+    pub fn get(&self, mut index: usize) -> Option<i64> {
+        for seg in &self.segments {
+            let len = seg.len();
+            if index < len {
+                let predicted = seg.start + seg.slope * (index as i64);
+                let residual = match &seg.residuals {
+                    ResidualStorage::I8(v) => v[index] as i64,
+                    ResidualStorage::I16(v) => v[index] as i64,
+                };
+                return Some(predicted + residual);
+            }
+            index -= len;
+        }
+        None
+    }
+
+    /// Decode back to the original sequence.
+    pub fn decode(&self) -> Vec<i64> {
+        let mut out = Vec::with_capacity(self.len());
+        for seg in &self.segments {
+            let n = seg.len();
+            for idx in 0..n {
+                let predicted = seg.start + seg.slope * (idx as i64);
+                let residual = match &seg.residuals {
+                    ResidualStorage::I8(v) => v[idx] as i64,
+                    ResidualStorage::I16(v) => v[idx] as i64,
+                };
+                out.push(predicted + residual);
+            }
+        }
+        out
+    }
+
+    /// Sum all values without full decode.
+    pub fn sum_i64(&self) -> i64 {
+        let mut total: i64 = 0;
+        for seg in &self.segments {
+            let n = seg.len() as i64;
+            // Sum of (start + slope*i + residual[i]) for i in 0..n
+            // = n*start + slope * n*(n-1)/2 + sum(residuals)
+            total += n * seg.start;
+            total += seg.slope * (n * (n - 1) / 2);
+            total += match &seg.residuals {
+                ResidualStorage::I8(v) => v.iter().map(|&r| r as i64).sum::<i64>(),
+                ResidualStorage::I16(v) => v.iter().map(|&r| r as i64).sum::<i64>(),
+            };
+        }
+        total
+    }
+
+    /// Heap bytes used by this column (for memory accounting).
+    pub fn heap_bytes(&self) -> usize {
+        let mut bytes = self.segments.capacity() * std::mem::size_of::<SlpSegment>();
+        for seg in &self.segments {
+            bytes += match &seg.residuals {
+                ResidualStorage::I8(v) => v.capacity(),
+                ResidualStorage::I16(v) => v.capacity() * 2,
+            };
+        }
+        bytes
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        self.segments.shrink_to_fit();
+        for seg in &mut self.segments {
+            match &mut seg.residuals {
+                ResidualStorage::I8(v) => v.shrink_to_fit(),
+                ResidualStorage::I16(v) => v.shrink_to_fit(),
+            }
+        }
+    }
+}
+
 /// Transpose a row-major `Vec<Vec<String>>` into columnar form, collapsing
 /// every column whose values are all equal into a [`DigitColumn::Constant`]
 /// and downcasting purely-decimal columns to packed `i32` / `i64` arrays.
@@ -330,5 +508,52 @@ mod tests {
         let inst1 = decode_name_nums(&columnar, 1);
         assert_eq!(inst0, vec!["a".to_string(), "1".to_string()]);
         assert_eq!(inst1, vec!["bf".to_string(), "12".to_string()]);
+    }
+
+    #[test]
+    fn slp_compact_round_trip() {
+        let original: Vec<i64> = (0..1000).map(|i| 100 + i * 7).collect();
+        let encoded = SlpCompact::encode(&original);
+        assert_eq!(encoded.decode(), original);
+        // Pure arithmetic progression: 1 segment, all i8 residuals (all zero)
+        assert_eq!(encoded.segments.len(), 1);
+        assert!(matches!(encoded.segments[0].residuals, ResidualStorage::I8(_)));
+    }
+
+    #[test]
+    fn slp_compact_with_noise() {
+        // Values with small deviations from linear — should use i8 residuals
+        let original: Vec<i64> = (0..100).map(|i| 1000 + i * 50 + (i % 7) - 3).collect();
+        let encoded = SlpCompact::encode(&original);
+        assert_eq!(encoded.decode(), original);
+        for (i, expected) in original.iter().enumerate() {
+            assert_eq!(encoded.get(i), Some(*expected));
+        }
+    }
+
+    #[test]
+    fn slp_compact_i16_residuals() {
+        // Values with larger deviations that need i16
+        let original: Vec<i64> = (0..100).map(|i| 1000 + i * 50 + (i % 3) * 200 - 200).collect();
+        let encoded = SlpCompact::encode(&original);
+        assert_eq!(encoded.decode(), original);
+    }
+
+    #[test]
+    fn slp_compact_sum() {
+        let original: Vec<i64> = (0..500).map(|i| 10 + i * 3 + (i % 5)).collect();
+        let encoded = SlpCompact::encode(&original);
+        let expected_sum: i64 = original.iter().sum();
+        assert_eq!(encoded.sum_i64(), expected_sum);
+    }
+
+    #[test]
+    fn slp_compact_segment_break() {
+        // Force a segment break with large jump
+        let mut original: Vec<i64> = (0..50).map(|i| i * 10).collect();
+        original.extend((0..50).map(|i| 100000 + i * 7));
+        let encoded = SlpCompact::encode(&original);
+        assert_eq!(encoded.decode(), original);
+        assert!(encoded.segments.len() >= 2);
     }
 }

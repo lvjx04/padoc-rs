@@ -50,6 +50,75 @@ struct KernelAgg {
     total_dur_us: i64,
 }
 
+/// Streaming overlap state per (rank, layer) — avoids collecting all intervals.
+#[derive(Default, Clone)]
+struct StreamingOverlapState {
+    comp_window: (i64, i64),
+    comm_window: (i64, i64),
+    overlap_accum: i64,
+    last_overlap_end: i64,
+    compute_total_us: i64,
+    comm_total_us: i64,
+}
+
+impl StreamingOverlapState {
+    fn push(&mut self, kernel_name: &str, ts: i64, dur: i64) {
+        let end = ts + dur;
+        if is_nccl_kernel(kernel_name) {
+            // Update comm window
+            if ts > self.comm_window.1 {
+                self.comm_total_us += dur;
+                self.comm_window = (ts, end);
+            } else if end > self.comm_window.1 {
+                self.comm_total_us += end - self.comm_window.1;
+                self.comm_window.1 = end;
+            } else {
+                self.comm_total_us += dur; // fully contained, still count
+            }
+        } else {
+            // Update compute window
+            if ts > self.comp_window.1 {
+                self.compute_total_us += dur;
+                self.comp_window = (ts, end);
+            } else if end > self.comp_window.1 {
+                self.compute_total_us += end - self.comp_window.1;
+                self.comp_window.1 = end;
+            } else {
+                self.compute_total_us += dur;
+            }
+        }
+        // Compute overlap between current windows
+        let overlap_start = self.comp_window.0.max(self.comm_window.0);
+        let overlap_end = self.comp_window.1.min(self.comm_window.1);
+        if overlap_start < overlap_end {
+            if overlap_start >= self.last_overlap_end {
+                self.overlap_accum += overlap_end - overlap_start;
+                self.last_overlap_end = overlap_end;
+            } else if overlap_end > self.last_overlap_end {
+                self.overlap_accum += overlap_end - self.last_overlap_end;
+                self.last_overlap_end = overlap_end;
+            }
+        }
+    }
+
+    fn to_json(&self, rank: &str, layer: &str) -> Value {
+        let denom = self.compute_total_us.min(self.comm_total_us);
+        let overlap_fraction = if denom > 0 {
+            self.overlap_accum as f64 / denom as f64
+        } else {
+            0.0
+        };
+        serde_json::json!({
+            "rank": rank,
+            "layer": layer,
+            "compute_total_us": self.compute_total_us,
+            "comm_total_us": self.comm_total_us,
+            "overlap_us": self.overlap_accum,
+            "overlap_fraction": overlap_fraction,
+        })
+    }
+}
+
 #[derive(Default, Clone)]
 struct IntervalAgg {
     compute: Vec<(i64, i64)>,
@@ -177,7 +246,7 @@ impl AnalysisTask for LayerComputeCommOverlap {
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
         let start = std::time::Instant::now();
-        let mut by_rank_layer: AHashMap<(String, String), IntervalAgg> = AHashMap::new();
+        let mut by_rank_layer: AHashMap<(String, String), StreamingOverlapState> = AHashMap::new();
         let mut coverage = Coverage {
             total_gpu_refs: total_gpu_kernel_refs(compressed),
             ..Coverage::default()
@@ -199,7 +268,7 @@ impl AnalysisTask for LayerComputeCommOverlap {
                 let entry = by_rank_layer
                     .entry((rank.to_string(), layer.to_string()))
                     .or_default();
-                push_interval(entry, &g.name_pattern, ts, dur);
+                entry.push(&g.name_pattern, ts, dur);
             });
         } else {
             walk_rank_layer_subtrees_legacy(compressed, |rank, layer, gpu| {
@@ -218,17 +287,25 @@ impl AnalysisTask for LayerComputeCommOverlap {
                 let entry = by_rank_layer
                     .entry((rank.to_string(), layer.to_string()))
                     .or_default();
-                push_interval(entry, &g.name_pattern, ts, dur);
+                entry.push(&g.name_pattern, ts, dur);
             });
         }
         let collect_secs = elapsed_secs(start);
         let start = std::time::Instant::now();
-        let result = overlap_json(by_rank_layer, coverage);
+        let mut rows: Vec<Value> = by_rank_layer
+            .into_iter()
+            .map(|((rank, layer), state)| state.to_json(&rank, &layer))
+            .collect();
+        rows.sort_by(rank_layer_value_cmp);
+        let result = serde_json::json!({
+            "coverage": coverage_json(coverage),
+            "rows": rows,
+        });
         Ok(profiled_result(
             result,
             vec![
-                ("layer_interval_collect", collect_secs),
-                ("interval_merge_and_json", elapsed_secs(start)),
+                ("layer_streaming_overlap", collect_secs),
+                ("json_output", elapsed_secs(start)),
             ],
         ))
     }

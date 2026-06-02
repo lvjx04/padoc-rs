@@ -328,6 +328,21 @@ impl BaselineCompressor for ScalaTraceCompressor {
         }
         Ok(trace)
     }
+
+    fn supports_in_situ(&self, task: &str) -> bool {
+        matches!(task, "operator_hotspot" | "rank_load_balance" | "gpu_bubble_rate")
+    }
+
+    fn run_in_situ(&self, bytes: &[u8], task: &str) -> Result<serde_json::Value> {
+        let raw = zstd::stream::decode_all(bytes)?;
+        let payload: ScalaTracePayload = rmp_serde::from_slice(&raw)?;
+        match task {
+            "operator_hotspot" => st_in_situ_operator_hotspot(&payload),
+            "rank_load_balance" => st_in_situ_rank_load_balance(&payload),
+            "gpu_bubble_rate" => st_in_situ_gpu_bubble_rate(&payload),
+            _ => Err(crate::Error::Other(format!("unsupported in-situ task: {task}"))),
+        }
+    }
 }
 
 /// Greedy RSD encoder: scan once, detect `(period, repeats)` runs.
@@ -377,4 +392,181 @@ impl StringDict {
         id
     }
     fn into_strings(self) -> Vec<String> { self.items }
+}
+
+// ---------------------------------------------------------------------------
+// In-situ analysis implementations for ScalaTrace
+// ---------------------------------------------------------------------------
+
+use serde_json::Value;
+
+fn st_in_situ_operator_hotspot(payload: &ScalaTracePayload) -> Result<Value> {
+    let dict = &payload.dict;
+    let mut tally: AHashMap<u32, i64> = AHashMap::new(); // name_id -> total_dur
+    for stream in &payload.streams {
+        for (i, &dur_present) in stream.dur_present.iter().enumerate() {
+            if !dur_present { continue; }
+            let dur = stream.dur[i];
+            // Use the normalized name from the type table via the RSD-expanded
+            // type sequence. But we have payload_name_ids which is dict-encoded
+            // verbatim name. For operator_hotspot we want the type's normalized
+            // name_id (from types table). We need to expand the type sequence.
+            // However that's expensive. Instead use the type's name_id which is
+            // already the normalized name.
+            let name_id = stream.payload_name_ids[i];
+            *tally.entry(name_id).or_insert(0) += dur;
+        }
+    }
+    let mut entries: Vec<(&str, i64)> = tally.into_iter()
+        .map(|(name_id, total)| (dict[name_id as usize].as_str(), total))
+        .collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.truncate(20);
+    let arr: Vec<Value> = entries.into_iter().map(|(name, total)| {
+        serde_json::json!({"name": name, "total_dur_us": total})
+    }).collect();
+    Ok(Value::Array(arr))
+}
+
+fn st_in_situ_rank_load_balance(payload: &ScalaTracePayload) -> Result<Value> {
+    let dict = &payload.dict;
+    let mut compute: AHashMap<u32, i64> = AHashMap::new(); // rank_id -> dur
+    let mut comm: AHashMap<u32, i64> = AHashMap::new();
+
+    // Pre-expand each stream's type sequence to check cat.
+    for stream in &payload.streams {
+        // Expand RSD sequence to get type_ids.
+        let mut type_seq: Vec<u32> = Vec::new();
+        for rid in &stream.rsd_ids {
+            if let Some(rsd) = payload.rsds.get(*rid as usize) {
+                for _ in 0..rsd.repeats {
+                    type_seq.extend_from_slice(&rsd.pattern);
+                }
+            }
+        }
+
+        let rank_id = stream.rank_id;
+        for (i, &dur_present) in stream.dur_present.iter().enumerate() {
+            if !dur_present { continue; }
+            // Check if this event is a GPU kernel (cat == "kernel").
+            let type_id = type_seq.get(i).copied().unwrap_or(0) as usize;
+            let ty = match payload.types.get(type_id) {
+                Some(t) => t,
+                None => continue,
+            };
+            if ty.cat_id_plus1 == 0 { continue; }
+            let cat = dict[(ty.cat_id_plus1 - 1) as usize].as_str();
+            if cat != "kernel" { continue; }
+
+            let dur = stream.dur[i];
+            let name = dict[ty.name_id as usize].as_str();
+            if crate::analysis::kernel_class::is_nccl_kernel(name) {
+                *comm.entry(rank_id).or_insert(0) += dur;
+            } else {
+                *compute.entry(rank_id).or_insert(0) += dur;
+            }
+        }
+    }
+
+    let mut compute_named: AHashMap<String, i64> = AHashMap::new();
+    let mut comm_named: AHashMap<String, i64> = AHashMap::new();
+    for (rank_id, dur) in compute {
+        compute_named.insert(dict[rank_id as usize].clone(), dur);
+    }
+    for (rank_id, dur) in comm {
+        comm_named.insert(dict[rank_id as usize].clone(), dur);
+    }
+    Ok(st_load_balance_json(&compute_named, &comm_named))
+}
+
+fn st_in_situ_gpu_bubble_rate(payload: &ScalaTracePayload) -> Result<Value> {
+    let dict = &payload.dict;
+    let mut per_rank: AHashMap<u32, Vec<(i64, i64)>> = AHashMap::new();
+
+    for stream in &payload.streams {
+        // Expand RSD sequence.
+        let mut type_seq: Vec<u32> = Vec::new();
+        for rid in &stream.rsd_ids {
+            if let Some(rsd) = payload.rsds.get(*rid as usize) {
+                for _ in 0..rsd.repeats {
+                    type_seq.extend_from_slice(&rsd.pattern);
+                }
+            }
+        }
+
+        let rank_id = stream.rank_id;
+        for (i, &dur_present) in stream.dur_present.iter().enumerate() {
+            if !dur_present { continue; }
+            let type_id = type_seq.get(i).copied().unwrap_or(0) as usize;
+            let ty = match payload.types.get(type_id) {
+                Some(t) => t,
+                None => continue,
+            };
+            if ty.cat_id_plus1 == 0 { continue; }
+            let cat = dict[(ty.cat_id_plus1 - 1) as usize].as_str();
+            if cat != "kernel" { continue; }
+
+            let ts = stream.ts[i];
+            let dur = stream.dur[i];
+            per_rank.entry(rank_id).or_default().push((ts, dur));
+        }
+    }
+
+    // Compute bubble rate per rank.
+    let mut results: Vec<Value> = Vec::new();
+    let mut ranks: Vec<u32> = per_rank.keys().copied().collect();
+    ranks.sort();
+    for rank_id in ranks {
+        let events = per_rank.get_mut(&rank_id).unwrap();
+        events.sort_unstable();
+        let rank_name = dict[rank_id as usize].as_str();
+        if events.is_empty() {
+            results.push(serde_json::json!({
+                "rank": rank_name, "bubble_rate": 0.0,
+                "busy_us": 0, "total_span_us": 0, "kernel_count": 0,
+            }));
+            continue;
+        }
+        let first_ts = events[0].0;
+        let mut last_end: i64 = first_ts;
+        let mut busy_window_end = first_ts;
+        let mut busy_total: i64 = 0;
+        for &(ts, dur) in events.iter() {
+            let end = ts + dur;
+            if end > last_end { last_end = end; }
+            if ts > busy_window_end {
+                busy_total += dur;
+                busy_window_end = end;
+            } else if end > busy_window_end {
+                busy_total += end - busy_window_end;
+                busy_window_end = end;
+            }
+        }
+        let total_span = last_end - first_ts;
+        let bubble_rate = if total_span > 0 {
+            1.0 - busy_total as f64 / total_span as f64
+        } else { 0.0 };
+        results.push(serde_json::json!({
+            "rank": rank_name,
+            "bubble_rate": bubble_rate,
+            "busy_us": busy_total,
+            "total_span_us": total_span,
+            "kernel_count": events.len(),
+        }));
+    }
+    Ok(Value::Array(results))
+}
+
+fn st_load_balance_json(compute: &AHashMap<String, i64>, comm: &AHashMap<String, i64>) -> Value {
+    let mut ranks: Vec<&String> = compute.keys().chain(comm.keys()).collect();
+    ranks.sort();
+    ranks.dedup();
+    let compute_vals: Vec<i64> = ranks.iter().map(|r| *compute.get(*r).unwrap_or(&0)).collect();
+    let comm_vals: Vec<i64> = ranks.iter().map(|r| *comm.get(*r).unwrap_or(&0)).collect();
+    let rank_names: Vec<&str> = ranks.iter().map(|r| r.as_str()).collect();
+    serde_json::json!({
+        "ranks": rank_names,
+        "compute_busy_us": compute_vals,
+        "comm_busy_us": comm_vals,
+    })
 }

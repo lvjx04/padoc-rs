@@ -90,7 +90,10 @@ pub fn run_analysis_matrix(
             let artifact = c.compress(&trace)?;
             for task in tasks {
                 if c.name() == "padoc" && task.supports_in_situ() {
+                    // PADOC in-situ: load CompressedTrace from artifact bytes.
+                    let dec_start = Instant::now();
                     let compressed = crate::trace::CompressedTrace::from_bytes(&artifact.bytes)?;
+                    let decompress_secs = dec_start.elapsed().as_secs_f64();
                     let an_start = Instant::now();
                     let _ = task.run_in_situ(&compressed)?;
                     let analysis_secs = an_start.elapsed().as_secs_f64();
@@ -99,11 +102,29 @@ pub fn run_analysis_matrix(
                         task: task.name().to_string(),
                         dataset: ds.name.to_string(),
                         load_secs,
-                        decompress_secs: 0.0,
+                        decompress_secs,
                         analysis_secs,
-                        total_secs: load_secs + analysis_secs,
+                        total_secs: load_secs + decompress_secs + analysis_secs,
                         in_situ: true,
                     });
+                } else if c.supports_in_situ(task.name()) {
+                    // Baseline (ScalaTrace/TraceZip) in-situ: decode payload
+                    // directly from artifact bytes without building Trace.
+                    let dec_start = Instant::now();
+                    let result = c.run_in_situ(&artifact.bytes, task.name());
+                    let in_situ_secs = dec_start.elapsed().as_secs_f64();
+                    if result.is_ok() {
+                        out.push(AnalysisRecord {
+                            compressor: c.name().to_string(),
+                            task: task.name().to_string(),
+                            dataset: ds.name.to_string(),
+                            load_secs,
+                            decompress_secs: 0.0, // decode is part of in_situ call
+                            analysis_secs: in_situ_secs,
+                            total_secs: load_secs + in_situ_secs,
+                            in_situ: true,
+                        });
+                    }
                 } else {
                     let dec_start = Instant::now();
                     let dec = c.decompress(&artifact.bytes).unwrap_or_else(|_| trace.clone_shallow());

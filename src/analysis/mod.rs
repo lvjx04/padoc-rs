@@ -22,7 +22,7 @@ use std::time::Instant;
 
 mod compute_comm_overlap;
 mod gpu_bubble;
-mod kernel_class;
+pub(crate) mod kernel_class;
 mod layer_gpu;
 mod layer_operator_balance;
 mod operator_hotspot;

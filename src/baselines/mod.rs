@@ -49,6 +49,16 @@ pub trait BaselineCompressor: Send + Sync {
     fn compress(&self, trace: &Trace) -> Result<CompressArtifact>;
 
     fn decompress(&self, bytes: &[u8]) -> Result<Trace>;
+
+    /// Whether this compressor supports in-situ analysis for the given task
+    /// (without full decompression back to `Trace`).
+    fn supports_in_situ(&self, _task: &str) -> bool { false }
+
+    /// Run an analysis task directly on the compressed bytes.
+    /// Only called when `supports_in_situ(task)` returns true.
+    fn run_in_situ(&self, _bytes: &[u8], _task: &str) -> Result<serde_json::Value> {
+        Err(crate::Error::Other("in-situ not implemented".into()))
+    }
 }
 
 /// Build the canonical lookup table used by the bench CLI.

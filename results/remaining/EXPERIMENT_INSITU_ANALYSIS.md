@@ -50,13 +50,8 @@ Vec capacities × element sizes for each field in the decoded payload structure.
 |---------|--------|-----------|----------|-------|--------------------|--------------------|
 | leworldmodel | 3.5M | 0.571 GiB | 0.645 GiB | **0.118 GiB** | 4.8x smaller | 5.5x smaller |
 | qwen3 | 33.8M | 4.246 GiB | 6.010 GiB | **2.53 GiB** | 1.7x smaller | 2.4x smaller |
-| unifolm | 80.2M | 14.542 GiB | — | **6.72 GiB** | 2.2x smaller | — |
-| llama | 301M | — | — | **8.669 GiB** | — | — |
-
-Note: llama_full cannot fit in memory for ScalaTrace/TraceZip compression on this machine.
-ScalaTrace/TraceZip payloads store ALL per-event scalars (ts, dur, ids, args) — effectively
-the same size as the raw Trace in memory. PADOC's template folding + typed columns + SLP
-compression reduce the resident footprint by 2–5x.
+| unifolm | 80.2M | 14.542 GiB | 17.906 GiB | **2.962 GiB** | 4.9x smaller | 6.0x smaller |
+| llama | 301M | 42.599 GiB | 60.166 GiB | **8.669 GiB** | 4.9x smaller | 6.9x smaller |
 
 | Dataset | Events | Artifact | Decode | RSS | op_hotspot | rank_balance | gpu_bubble | layer_overlap |
 |---------|--------|----------|--------|-----|-----------|-------------|-----------|--------------|

@@ -76,6 +76,44 @@ fn main() {
     // Header
     println!("compressor\ttask\tin_situ\tartifact_bytes\tload_secs\tdecode_secs\tanalyze_secs\ttotal_secs\tresident_kib");
 
+    // === Raw baseline: load JSON trace → run_raw directly ===
+    {
+        let raw_size: u64 = if path.is_dir() {
+            std::fs::read_dir(path).unwrap()
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .sum()
+        } else {
+            std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+        };
+
+        let rss_before = current_rss_kib();
+        let load_start = Instant::now();
+        let raw_trace = load_trace(path);
+        let load_secs = load_start.elapsed().as_secs_f64();
+        let rss_after = current_rss_kib();
+        let resident_kib = rss_after.saturating_sub(rss_before);
+
+        for task in &insitu_tasks {
+            let an_start = Instant::now();
+            let _ = task.run_raw(&raw_trace).unwrap();
+            let analyze_secs = an_start.elapsed().as_secs_f64();
+            let total = load_secs + analyze_secs;
+            println!("raw\t{}\tfalse\t{}\t{:.6}\t0.000000\t{:.6}\t{:.6}\t{}",
+                task.name(), raw_size, load_secs, analyze_secs, total, resident_kib);
+        }
+        // layer task
+        let an_start = Instant::now();
+        let _ = layer_task.run_raw(&raw_trace).unwrap();
+        let analyze_secs = an_start.elapsed().as_secs_f64();
+        let total = load_secs + analyze_secs;
+        println!("raw\t{}\tfalse\t{}\t{:.6}\t0.000000\t{:.6}\t{:.6}\t{}",
+            layer_task.name(), raw_size, load_secs, analyze_secs, total, resident_kib);
+        drop(raw_trace);
+    }
+
     for (ci, c) in compressors.iter().enumerate() {
         let art = &artifacts[ci];
 

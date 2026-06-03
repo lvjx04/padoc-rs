@@ -38,7 +38,7 @@ fn main() {
         Box::new(analysis::LayerComputeCommOverlap),
     ];
 
-    println!("dataset\tcompressor\ttask\tin_situ\tanalyze_secs");
+    println!("dataset\tcompressor\ttask\tin_situ\tdecode_secs\tanalyze_secs\ttotal_secs");
 
     // Raw baseline
     {
@@ -47,7 +47,7 @@ fn main() {
             let an_start = Instant::now();
             let _ = task.run_raw(&trace).unwrap();
             let secs = an_start.elapsed().as_secs_f64();
-            println!("{}\traw\t{}\tfalse\t{:.6}", dataset, task.name(), secs);
+            println!("{}\traw\t{}\tfalse\t0.000000\t{:.6}\t{:.6}", dataset, task.name(), secs, secs);
         }
     }
 
@@ -59,27 +59,36 @@ fn main() {
 
         if c.name() == "padoc" {
             // PADOC: decode once, run all 4 tasks
+            let decode_start = Instant::now();
             let compressed = padoc::trace::CompressedTrace::from_bytes(&artifact.bytes).unwrap();
+            let decode_secs = decode_start.elapsed().as_secs_f64();
+            eprintln!("[{}] padoc decode time: {:.3}s", dataset, decode_secs);
             for task in &tasks {
                 let an_start = Instant::now();
                 let _ = task.run_in_situ(&compressed).unwrap();
                 let secs = an_start.elapsed().as_secs_f64();
-                println!("{}\tpadoc\t{}\ttrue\t{:.6}", dataset, task.name(), secs);
+                println!("{}\tpadoc\t{}\ttrue\t{:.6}\t{:.6}\t{:.6}", dataset, task.name(), decode_secs, secs, decode_secs + secs);
             }
         } else {
-            // ScalaTrace/TraceZip: 3 in-situ tasks + 1 decompress
+            // ScalaTrace/TraceZip: decode once, then run 3 tasks on decoded payload
+            let decode_start = Instant::now();
+            let decoded = c.decode_for_analysis(&artifact.bytes).unwrap();
+            let decode_secs = decode_start.elapsed().as_secs_f64();
+            eprintln!("[{}] {} decode time: {:.3}s", dataset, c.name(), decode_secs);
+
             for task in &tasks[..3] {
                 let an_start = Instant::now();
-                let _ = c.run_in_situ(&artifact.bytes, task.name()).unwrap();
-                let secs = an_start.elapsed().as_secs_f64();
-                println!("{}\t{}\t{}\ttrue\t{:.6}", dataset, c.name(), task.name(), secs);
+                let _ = c.run_in_situ_decoded(decoded.as_ref(), task.name()).unwrap();
+                let analyze_secs = an_start.elapsed().as_secs_f64();
+                println!("{}\t{}\t{}\ttrue\t{:.6}\t{:.6}\t{:.6}", dataset, c.name(), task.name(), decode_secs, analyze_secs, decode_secs + analyze_secs);
             }
-            // layer: decompress + run_raw
+            drop(decoded);
+            // layer: decompress + run_raw (pure analyze only)
             let dec_trace = c.decompress(&artifact.bytes).unwrap();
             let an_start = Instant::now();
             let _ = tasks[3].run_raw(&dec_trace).unwrap();
             let secs = an_start.elapsed().as_secs_f64();
-            println!("{}\t{}\t{}\tfalse\t{:.6}", dataset, c.name(), tasks[3].name(), secs);
+            println!("{}\t{}\t{}\tfalse\t0.000000\t{:.6}\t{:.6}", dataset, c.name(), tasks[3].name(), secs, secs);
         }
     }
 }

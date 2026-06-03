@@ -323,6 +323,23 @@ impl BaselineCompressor for TraceZipCompressor {
             _ => Err(crate::Error::Other(format!("unsupported in-situ task: {task}"))),
         }
     }
+
+    fn decode_for_analysis(&self, bytes: &[u8]) -> Result<Box<dyn std::any::Any>> {
+        let raw = zstd::stream::decode_all(bytes)?;
+        let payload: TraceZipPayload = rmp_serde::from_slice(&raw)?;
+        Ok(Box::new(payload))
+    }
+
+    fn run_in_situ_decoded(&self, decoded: &dyn std::any::Any, task: &str) -> Result<Value> {
+        let payload = decoded.downcast_ref::<TraceZipPayload>()
+            .ok_or_else(|| crate::Error::Other("invalid decoded payload".into()))?;
+        match task {
+            "operator_hotspot" => in_situ_operator_hotspot(payload),
+            "rank_load_balance" => in_situ_rank_load_balance(payload),
+            "gpu_bubble_rate" => in_situ_gpu_bubble_rate(payload),
+            _ => Err(crate::Error::Other(format!("unsupported in-situ task: {task}"))),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

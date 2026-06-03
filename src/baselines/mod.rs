@@ -59,6 +59,17 @@ pub trait BaselineCompressor: Send + Sync {
     fn run_in_situ(&self, _bytes: &[u8], _task: &str) -> Result<serde_json::Value> {
         Err(crate::Error::Other("in-situ not implemented".into()))
     }
+
+    /// Decode the compressed bytes into an opaque in-memory payload for
+    /// repeated in-situ queries. Returns None if not supported.
+    fn decode_for_analysis(&self, _bytes: &[u8]) -> Result<Box<dyn std::any::Any>> {
+        Err(crate::Error::Other("decode_for_analysis not implemented".into()))
+    }
+
+    /// Run an analysis task on a previously decoded payload (from `decode_for_analysis`).
+    fn run_in_situ_decoded(&self, _decoded: &dyn std::any::Any, _task: &str) -> Result<serde_json::Value> {
+        Err(crate::Error::Other("run_in_situ_decoded not implemented".into()))
+    }
 }
 
 /// Build the canonical lookup table used by the bench CLI.

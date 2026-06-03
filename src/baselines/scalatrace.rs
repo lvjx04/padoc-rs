@@ -343,6 +343,23 @@ impl BaselineCompressor for ScalaTraceCompressor {
             _ => Err(crate::Error::Other(format!("unsupported in-situ task: {task}"))),
         }
     }
+
+    fn decode_for_analysis(&self, bytes: &[u8]) -> Result<Box<dyn std::any::Any>> {
+        let raw = zstd::stream::decode_all(bytes)?;
+        let payload: ScalaTracePayload = rmp_serde::from_slice(&raw)?;
+        Ok(Box::new(payload))
+    }
+
+    fn run_in_situ_decoded(&self, decoded: &dyn std::any::Any, task: &str) -> Result<serde_json::Value> {
+        let payload = decoded.downcast_ref::<ScalaTracePayload>()
+            .ok_or_else(|| crate::Error::Other("invalid decoded payload".into()))?;
+        match task {
+            "operator_hotspot" => st_in_situ_operator_hotspot(payload),
+            "rank_load_balance" => st_in_situ_rank_load_balance(payload),
+            "gpu_bubble_rate" => st_in_situ_gpu_bubble_rate(payload),
+            _ => Err(crate::Error::Other(format!("unsupported in-situ task: {task}"))),
+        }
+    }
 }
 
 /// Greedy RSD encoder: scan once, detect `(period, repeats)` runs.

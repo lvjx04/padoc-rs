@@ -93,9 +93,10 @@ will begin with the first stable release.
 ## Design
 
 PADOC groups events by stable signatures, stores per-instance values in typed
-columns, and retains a compact call-tree representation for direct analysis.
-Large JSON files are parsed as a stream, and artifact payloads are serialized
-directly through zstd without materializing an intermediate MessagePack buffer.
+columns, and records flat template/instance references per stream. Large JSON
+files are parsed as a stream, and artifact payloads are serialized directly
+through zstd without materializing an intermediate MessagePack buffer. The
+stable encoder deliberately avoids recursive call trees and cross-rank merging.
 
 See [docs/design.md](docs/design.md) and [docs/artifact-format.md](docs/artifact-format.md)
 for the current engineering contract.

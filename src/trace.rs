@@ -719,7 +719,8 @@ pub struct CompressedTrace {
 }
 
 /// Current on-disk PADOC artifact format.
-pub const ARTIFACT_FORMAT_VERSION: u16 = 1;
+pub const ARTIFACT_FORMAT_VERSION: u16 = 2;
+const MIN_SUPPORTED_ARTIFACT_FORMAT_VERSION: u16 = 1;
 const ARTIFACT_MAGIC: &[u8; 8] = b"PADOCART";
 const ARTIFACT_CODEC_ZSTD: u8 = 1;
 const ARTIFACT_HEADER_LEN: usize = 16;
@@ -827,9 +828,10 @@ fn read_artifact_header(reader: &mut impl std::io::Read) -> Result<()> {
         ));
     }
     let version = u16::from_le_bytes([header[8], header[9]]);
-    if version != ARTIFACT_FORMAT_VERSION {
+    if !(MIN_SUPPORTED_ARTIFACT_FORMAT_VERSION..=ARTIFACT_FORMAT_VERSION).contains(&version) {
         return Err(crate::Error::InvalidCompressed(format!(
-            "unsupported artifact format version {version}; expected {ARTIFACT_FORMAT_VERSION}"
+            "unsupported artifact format version {version}; supported versions are \
+             {MIN_SUPPORTED_ARTIFACT_FORMAT_VERSION}..={ARTIFACT_FORMAT_VERSION}"
         )));
     }
     if header[10] != ARTIFACT_CODEC_ZSTD {

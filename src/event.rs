@@ -502,16 +502,27 @@ impl PhaseColumn {
 /// * a uniformly-typed `Bool` column,
 /// * a string column with low cardinality (`StrDict`) — most common shape for
 ///   chrome-trace string args like `cat`/`detail` strings,
-/// * a heterogeneous fallback (`PerInstance`).
+/// * a type-tagged heterogeneous fallback (`Exact`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ArgColumn {
+    /// Legacy v1 representation. New artifacts use `ExactConstant` so JSON
+    /// integer/float kinds survive MessagePack deserialization.
     Constant(ArgValue),
+    ExactConstant(ExactArgValue),
     I32(Vec<i32>),
     I64(Vec<i64>),
     F64(Vec<f64>),
     Bool(Vec<u8>),
     Str(Vec<String>),
-    StrDict { dict: Vec<String>, ids: Vec<u32> },
+    StrDict {
+        dict: Vec<String>,
+        ids: Vec<u32>,
+    },
+    /// Type-tagged JSON values used for heterogeneous columns in v2
+    /// artifacts. `serde_json::Value` cannot itself round-trip integer and
+    /// float kinds through every non-JSON Serde format.
+    Exact(Vec<ExactArgValue>),
+    /// Legacy v1 representation retained for backward-compatible reads.
     PerInstance(Vec<ArgValue>),
 }
 
@@ -519,12 +530,14 @@ impl ArgColumn {
     pub fn len(&self) -> usize {
         match self {
             ArgColumn::Constant(_) => 1,
+            ArgColumn::ExactConstant(_) => 1,
             ArgColumn::I32(v) => v.len(),
             ArgColumn::I64(v) => v.len(),
             ArgColumn::F64(v) => v.len(),
             ArgColumn::Bool(v) => v.len(),
             ArgColumn::Str(v) => v.len(),
             ArgColumn::StrDict { ids, .. } => ids.len(),
+            ArgColumn::Exact(v) => v.len(),
             ArgColumn::PerInstance(v) => v.len(),
         }
     }
@@ -538,6 +551,7 @@ impl ArgColumn {
     pub fn get_owned(&self, i: usize) -> Option<ArgValue> {
         match self {
             ArgColumn::Constant(v) => Some(v.clone()),
+            ArgColumn::ExactConstant(v) => Some(v.clone().into_json()),
             ArgColumn::I32(v) => v.get(i).map(|x| serde_json::Value::from(*x as i64)),
             ArgColumn::I64(v) => v.get(i).map(|x| serde_json::Value::from(*x)),
             ArgColumn::F64(v) => v
@@ -550,6 +564,7 @@ impl ArgColumn {
                     .cloned()
                     .map(serde_json::Value::String)
             }),
+            ArgColumn::Exact(v) => v.get(i).cloned().map(ExactArgValue::into_json),
             ArgColumn::PerInstance(v) => v.get(i).cloned(),
         }
     }
@@ -577,8 +592,8 @@ impl ArgColumn {
         };
         // 1. Constant detection.
         let first = values[0].clone();
-        if values.iter().all(|v| v == &first) {
-            *self = ArgColumn::Constant(first);
+        if values.iter().all(|v| json_value_exact_eq(v, &first)) {
+            *self = ArgColumn::ExactConstant(ExactArgValue::from_json(first));
             return;
         }
         // 2. Typed numeric / bool.
@@ -605,10 +620,17 @@ impl ArgColumn {
                         if i > max_i {
                             max_i = i;
                         }
-                        // ints are legal floats too; keep all_float possible.
+                        // JSON integers and floats are observably different:
+                        // `0` must not round-trip as `0.0`. Keep mixed numeric
+                        // columns in their original `Value` representation.
+                        all_float = false;
                     } else if n.is_f64() {
                         all_int = false;
                     } else {
+                        // serde_json can represent positive integers above
+                        // i64::MAX. There is no unsigned compact column, so
+                        // preserving the original JSON number is the only
+                        // lossless representation.
                         all_int = false;
                         all_float = false;
                     }
@@ -684,15 +706,132 @@ impl ArgColumn {
                 let strs: Vec<String> = ids.iter().map(|i| dict[*i as usize].clone()).collect();
                 *self = ArgColumn::Str(strs);
             }
+            return;
         }
-        // Heterogeneous — keep as PerInstance but the existing storage already
-        // represents that, so nothing to do.
+        // Heterogeneous JSON must be explicitly type-tagged before MessagePack
+        // serialization. Deserializing raw `serde_json::Value` from a
+        // non-JSON format can turn JSON integers into floats.
+        *self = ArgColumn::Exact(
+            values
+                .iter()
+                .cloned()
+                .map(ExactArgValue::from_json)
+                .collect(),
+        );
     }
 }
 
 impl Default for ArgColumn {
     fn default() -> Self {
         ArgColumn::PerInstance(Vec::new())
+    }
+}
+
+/// `serde_json::Value` deliberately treats numerically equivalent numbers
+/// such as `0` and `0.0` as equal. Chrome trace round-trips need the original
+/// JSON number kind as well: collapsing those values into one constant would
+/// rewrite observable output. Compare recursively with type-sensitive number
+/// semantics instead.
+fn json_value_exact_eq(left: &ArgValue, right: &ArgValue) -> bool {
+    match (left, right) {
+        (serde_json::Value::Null, serde_json::Value::Null) => true,
+        (serde_json::Value::Bool(left), serde_json::Value::Bool(right)) => left == right,
+        (serde_json::Value::Number(left), serde_json::Value::Number(right)) => {
+            if let (Some(left), Some(right)) = (left.as_i64(), right.as_i64()) {
+                left == right
+            } else if let (Some(left), Some(right)) = (left.as_u64(), right.as_u64()) {
+                left == right
+            } else if left.is_f64() && right.is_f64() {
+                left.as_f64().map(f64::to_bits) == right.as_f64().map(f64::to_bits)
+            } else {
+                false
+            }
+        }
+        (serde_json::Value::String(left), serde_json::Value::String(right)) => left == right,
+        (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right.iter())
+                    .all(|(left, right)| json_value_exact_eq(left, right))
+        }
+        (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, left)| {
+                    right
+                        .get(key)
+                        .is_some_and(|right| json_value_exact_eq(left, right))
+                })
+        }
+        _ => false,
+    }
+}
+
+/// Serde-format-independent representation of a Chrome trace arg value.
+///
+/// The numeric variants are explicit because `serde_json::Value` uses
+/// format-dependent `deserialize_any` behavior outside JSON. This type is
+/// public only because it appears in the public `ArgColumn` enum.
+#[doc(hidden)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ExactArgValue {
+    Null,
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    F64(f64),
+    String(String),
+    Array(Vec<ExactArgValue>),
+    Object(Vec<(String, ExactArgValue)>),
+}
+
+impl ExactArgValue {
+    fn from_json(value: ArgValue) -> Self {
+        match value {
+            serde_json::Value::Null => Self::Null,
+            serde_json::Value::Bool(value) => Self::Bool(value),
+            serde_json::Value::Number(value) => {
+                if let Some(value) = value.as_i64() {
+                    Self::I64(value)
+                } else if let Some(value) = value.as_u64() {
+                    Self::U64(value)
+                } else {
+                    Self::F64(value.as_f64().unwrap_or(0.0))
+                }
+            }
+            serde_json::Value::String(value) => Self::String(value),
+            serde_json::Value::Array(values) => {
+                Self::Array(values.into_iter().map(Self::from_json).collect())
+            }
+            serde_json::Value::Object(values) => Self::Object(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, Self::from_json(value)))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn into_json(self) -> ArgValue {
+        match self {
+            Self::Null => serde_json::Value::Null,
+            Self::Bool(value) => serde_json::Value::Bool(value),
+            Self::I64(value) => serde_json::Value::from(value),
+            Self::U64(value) => serde_json::Value::from(value),
+            Self::F64(value) => serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            Self::String(value) => serde_json::Value::String(value),
+            Self::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(Self::into_json).collect())
+            }
+            Self::Object(values) => serde_json::Value::Object(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, value.into_json()))
+                    .collect(),
+            ),
+        }
     }
 }
 
@@ -913,4 +1052,58 @@ pub fn collect_arg_keys(events: &[&Event]) -> Vec<String> {
     }
     keys.sort();
     keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ArgColumn;
+
+    #[test]
+    fn mixed_json_numbers_keep_their_original_kind() {
+        let values = vec![
+            serde_json::json!(0),
+            serde_json::json!(14.905873071154925_f64),
+            serde_json::json!(9_223_372_036_854_775_808_u64),
+        ];
+        let mut column = ArgColumn::PerInstance(values.clone());
+
+        column.compact();
+
+        assert!(matches!(column, ArgColumn::Exact(_)));
+        for (index, expected) in values.into_iter().enumerate() {
+            assert_eq!(column.get_owned(index), Some(expected));
+        }
+    }
+
+    #[test]
+    fn homogeneous_float_columns_remain_compactable() {
+        let values = vec![
+            serde_json::json!(14.905873071154925_f64),
+            serde_json::json!(0.5_f64),
+        ];
+        let mut column = ArgColumn::PerInstance(values.clone());
+
+        column.compact();
+
+        assert!(matches!(column, ArgColumn::F64(_)));
+        for (index, expected) in values.into_iter().enumerate() {
+            assert_eq!(column.get_owned(index), Some(expected));
+        }
+    }
+
+    #[test]
+    fn constant_detection_is_type_sensitive_inside_nested_values() {
+        let values = vec![
+            serde_json::json!({"shape": [0, 1]}),
+            serde_json::json!({"shape": [0.0, 1]}),
+        ];
+        let mut column = ArgColumn::PerInstance(values.clone());
+
+        column.compact();
+
+        assert!(matches!(column, ArgColumn::Exact(_)));
+        for (index, expected) in values.into_iter().enumerate() {
+            assert_eq!(column.get_owned(index), Some(expected));
+        }
+    }
 }

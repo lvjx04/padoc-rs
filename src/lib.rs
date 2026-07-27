@@ -5,8 +5,8 @@
 //! `perflowai/padoc`.  It keeps the same compression / analysis semantics
 //! (same paper, same evaluation methodology) but with these design goals:
 //!
-//! * **Performance** — chrome-trace ingest via `simd-json`, columnar template
-//!   storage, in-place SLP, hash-bucket dedup of similar nodes;
+//! * **Performance** — streaming chrome-trace ingest and columnar template
+//!   storage with flat per-stream references;
 //! * **Simplicity** — no class hierarchies for nodes/events, just enums;
 //! * **Predictable resources** — each input trace is compressed independently;
 //!   directory-level concurrency is bounded by the caller.
@@ -14,10 +14,10 @@
 //! ## Module layout
 //!
 //! * [`event`]        — `Event`, `MergeEvent`, `KernelEvent` and friends
-//! * [`node`]         — call-tree nodes (CPU / SameCPU / KernelLaunch / GPU)
+//! * [`node`]         — flat v2 stream references and legacy v1 node decoding
 //! * [`trace`]        — `Trace`, `CompressedTrace`, JSON ingest, msgpack/zstd serialisation
 //! * [`slp`]          — segmented linear predictor for ts/dur/id/name compression
-//! * [`compressor`]   — template extraction and structural compression
+//! * [`compressor`]   — template extraction and bounded-depth stream encoding
 //! * [`analysis`]     — stable in-situ analysis tasks
 //! * [`synthetic`]    — deterministic traces used by examples and tests
 

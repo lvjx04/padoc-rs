@@ -107,6 +107,7 @@ fn artifact_has_a_versioned_header_and_is_deterministic() {
     let second_bytes = second.to_bytes(3).expect("serialize");
 
     assert_eq!(&first_bytes[..8], b"PADOCART");
+    assert_eq!(u16::from_le_bytes([first_bytes[8], first_bytes[9]]), 2);
     assert_eq!(first_bytes, second_bytes);
 }
 
@@ -139,6 +140,61 @@ fn cpu_and_gpu_events_with_the_same_signature_do_not_collide() {
     );
     let recovered = round_trip(&trace);
     let report = padoc::verify::compare_traces(&trace, &recovered);
+    assert!(report.is_ok(), "{report:#?}");
+}
+
+#[test]
+fn mixed_integer_and_float_args_round_trip_exactly() {
+    let mut integer = event("kernel", 1, Some(10), None, "stream 7");
+    integer.args = Some(AHashMap::from_iter([
+        ("blocks per SM".into(), serde_json::json!(0)),
+        ("memory bandwidth (GB/s)".into(), serde_json::json!(0)),
+    ]));
+    let mut float = event("kernel", 20, Some(8), None, "stream 7");
+    float.args = Some(AHashMap::from_iter([
+        ("blocks per SM".into(), serde_json::json!(0.0)),
+        (
+            "memory bandwidth (GB/s)".into(),
+            serde_json::json!(14.905873071154925_f64),
+        ),
+    ]));
+    let trace = one_rank_trace(Vec::new(), vec![integer, float]);
+
+    let mut compressor = TemplateCompressor::new();
+    let compressed = compressor.compress(&trace).expect("compress");
+    let direct = padoc::decompress(&compressed);
+    let direct_report = padoc::verify::compare_traces(&trace, &direct);
+    assert!(
+        direct_report.is_ok(),
+        "in-memory round trip failed: {direct_report:#?}"
+    );
+    let bytes = compressed.to_bytes(3).expect("serialize");
+    let reloaded = CompressedTrace::from_bytes(&bytes).expect("deserialize");
+    let recovered = padoc::decompress(&reloaded);
+    let report = padoc::verify::compare_traces(&trace, &recovered);
+
+    assert!(report.is_ok(), "artifact round trip failed: {report:#?}");
+}
+
+#[test]
+fn deeply_nested_intervals_use_a_bounded_depth_artifact() {
+    let depth = 4_096_i64;
+    let events = (0..depth)
+        .map(|index| {
+            event(
+                "nested_operator",
+                index,
+                Some((depth - index) * 2),
+                None,
+                "cpu",
+            )
+        })
+        .collect();
+    let trace = one_rank_trace(events, Vec::new());
+
+    let recovered = round_trip(&trace);
+    let report = padoc::verify::compare_traces(&trace, &recovered);
+
     assert!(report.is_ok(), "{report:#?}");
 }
 

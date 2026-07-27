@@ -1,5 +1,5 @@
-//! `TemplateCompressor` driver — coordinates call-tree build, template
-//! formation, structural compression and numeric finalisation.
+//! `TemplateCompressor` driver—coordinates template formation, flat stream
+//! references, and column finalization.
 //!
 use ahash::AHashMap;
 
@@ -50,7 +50,7 @@ impl TemplateCompressor {
                 Some(s) => s,
                 None => continue,
             };
-            let rank_root = super::call_tree::build_rank(self, rank_streams);
+            let rank_root = super::flat::build_rank(self, rank_streams);
             compressed.ranks.insert(rank, rank_root);
         }
 
@@ -134,8 +134,8 @@ impl TemplateCompressor {
         use rayon::prelude::*;
         let config = &self.config;
         self.templates.par_iter_mut().for_each(|tmpl| match tmpl {
-            Template::Cpu(t) => super::structural::finalize_cpu_template(t, config),
-            Template::Gpu(t) => super::structural::finalize_gpu_template(t, config),
+            Template::Cpu(t) => super::finalize::cpu_template(t, config),
+            Template::Gpu(t) => super::finalize::gpu_template(t, config),
         });
     }
 }

@@ -8,15 +8,14 @@ correctness, bounded resource use, and a small supportable interface.
 1. Parse one Chrome trace file. Files larger than 32 MiB use the streaming
    parser to avoid a full JSON value tree.
 2. Normalize timestamps relative to the first event in the trace.
-3. Build CPU call trees and associate GPU kernels through supported correlation
-   fields when a unique match is available.
-4. Group events into CPU and GPU templates. CPU and GPU signatures use separate
+3. Group events into CPU and GPU templates. CPU and GPU signatures use separate
    namespaces.
-5. Compact numeric, string, argument, phase, and name-digit columns.
+4. Compact numeric, string, argument, phase, and name-digit columns.
+5. Store flat template/instance references for each stream.
 6. Serialize the versioned payload through zstd.
 
-The supported encoder policy is fixed. Research-only ablation switches are not
-part of the public API.
+The supported encoder policy is fixed. Recursive call-tree merging, cross-rank
+merging, and research-only ablation switches are not part of the public API.
 
 ## Directory processing
 
@@ -47,12 +46,17 @@ missing `dur` or `id` values from shifting a compact column. CPU and GPU
 templates also use separate indices, so identical names and argument schemas
 cannot collide across event kinds.
 
+Heterogeneous JSON argument columns use an explicit type-tagged fallback. JSON
+integers, unsigned integers, and floats therefore remain distinct through the
+MessagePack payload, including inside nested arrays and objects.
+
 Chrome metadata records preserve names, original `pid`/`tid` coordinates,
 argument payloads, duplicates, and input order.
 
 ## Non-goals
 
 - Cross-rank template merging.
+- Recursive call-tree or correlation-edge reconstruction.
 - Paper baseline implementations in the public crate.
 - Workload-specific analysis presented as a general semantic guarantee.
 - Byte-for-byte reproduction of the original JSON formatting or event order.

@@ -1,8 +1,8 @@
 //! Lossless reconstruction of a [`Trace`] from a [`CompressedTrace`].
 //!
-//! The compressed form keeps every original field — we just have to walk the
-//! call-tree and re-emit one [`Event`] per `(template_id, instance_id)` pair,
-//! placing it back under the right `(rank, pid, tid, phase)` stream.
+//! The compressed form keeps every original field. Version 2 artifacts use
+//! flat stream batches; recursive branches below are the version 1
+//! compatibility path.
 //!
 //! Notes on placement:
 //!
@@ -75,6 +75,11 @@ fn visit(node: &Node, context: &DecodeContext<'_>, trace: &mut Trace) {
             }
             for c in &n.slots {
                 visit(c, context, trace);
+            }
+        }
+        Node::CpuBatch(n) => {
+            for (tmpl_id, inst) in n.templates.iter().zip(n.instances.iter()) {
+                emit_cpu(context, *tmpl_id, *inst, trace);
             }
         }
         Node::SameCpu(n) => {

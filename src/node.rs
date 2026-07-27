@@ -1,9 +1,9 @@
-//! Compressed call-tree nodes.
+//! Compressed stream references and legacy call-tree nodes.
 //!
-//! In the Python implementation each node was its own class
-//! (`CPUNode`, `SameCPUNode`, `KernelLaunchNode`, `KernelsLaunchNode`,
-//! `GPUNode`).  Rust collapses them into one [`Node`] enum so the tree
-//! is uniform and traversal is one `match`.
+//! Version 2 artifacts use [`Node::CpuBatch`] and [`Node::Gpu`], both flat
+//! parallel arrays. The recursive variants remain readable for compatibility
+//! with pre-release version 1 artifacts but are not emitted by the stable
+//! encoder.
 //!
 //! ## Node semantics
 //!
@@ -26,7 +26,7 @@ pub type TemplateId = u32;
 /// Per-template position; together with `TemplateId` identifies one event instance.
 pub type InstanceId = u32;
 
-/// A compressed call-tree node.  See module docs for variant semantics.
+/// A compressed stream reference or legacy v1 call-tree node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "k", content = "v", rename_all = "snake_case")]
 pub enum Node {
@@ -37,10 +37,19 @@ pub enum Node {
     },
 
     Cpu(CpuNode),
+    /// Stable v2 representation for one complete CPU stream.
+    CpuBatch(CpuBatchNode),
     SameCpu(SameCpuNode),
     Gpu(GpuNode),
     KernelLaunch(KernelLaunchNode),
     KernelsLaunch(KernelsLaunchNode),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CpuBatchNode {
+    /// Parallel arrays—`templates[i]` and `instances[i]` identify one event.
+    pub templates: Vec<TemplateId>,
+    pub instances: Vec<InstanceId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -110,7 +119,7 @@ impl Node {
                     out.extend(slot.iter());
                 }
             }
-            Node::Gpu(_) | Node::KernelLaunch(_) | Node::KernelsLaunch(_) => {}
+            Node::CpuBatch(_) | Node::Gpu(_) | Node::KernelLaunch(_) | Node::KernelsLaunch(_) => {}
         }
         out
     }
@@ -121,7 +130,7 @@ impl Node {
             Node::SameCpu(n) => Some(n.template),
             Node::KernelLaunch(n) => Some(n.cpu_template),
             Node::KernelsLaunch(n) => Some(n.cpu_template),
-            Node::Gpu(_) | Node::Root { .. } => None,
+            Node::CpuBatch(_) | Node::Gpu(_) | Node::Root { .. } => None,
         }
     }
 

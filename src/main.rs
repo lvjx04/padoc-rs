@@ -95,7 +95,7 @@ struct ArtifactInfo {
 }
 
 fn main() -> anyhow::Result<()> {
-    padoc::utils::init_logging();
+    init_logging();
     let cli = Cli::parse();
     match cli.command {
         Command::Compress {
@@ -122,6 +122,17 @@ fn main() -> anyhow::Result<()> {
         Command::Inspect { input } => inspect_artifact(&input),
         Command::List => list_tasks(),
     }
+}
+
+fn init_logging() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let _ = fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 fn compress_file(input: &Path, output: &Path, zstd_level: i32) -> anyhow::Result<DirectoryEntry> {
@@ -297,11 +308,12 @@ fn analyze_artifact(input: &Path, task_name: &str) -> anyhow::Result<()> {
 
 fn inspect_artifact(input: &Path) -> anyhow::Result<()> {
     ensure_regular_file(input, "PADOC artifact")?;
-    let compressed = CompressedTrace::read_from_path(input)
-        .with_context(|| format!("read artifact {}", input.display()))?;
+    let (compressed, format_version) =
+        CompressedTrace::read_from_path_with_format_version(input)
+            .with_context(|| format!("read artifact {}", input.display()))?;
     let info = ArtifactInfo {
         path: input.display().to_string(),
-        format_version: padoc::trace::ARTIFACT_FORMAT_VERSION,
+        format_version,
         artifact_bytes: std::fs::metadata(input)?.len(),
         ranks: compressed.ranks.keys().cloned().collect(),
         templates: compressed.templates.len(),

@@ -771,11 +771,19 @@ impl CompressedTrace {
 
     /// Read a PADOC artifact with bounded I/O buffering.
     pub fn read_from_path(path: impl AsRef<Path>) -> Result<Self> {
+        Self::read_from_path_with_format_version(path).map(|(trace, _)| trace)
+    }
+
+    /// Read a PADOC artifact and return the validated on-disk format version.
+    ///
+    /// This is useful for metadata tools that must report the artifact header
+    /// rather than the version emitted by the current build.
+    pub fn read_from_path_with_format_version(path: impl AsRef<Path>) -> Result<(Self, u16)> {
         let file = std::fs::File::open(path)?;
         let mut reader = std::io::BufReader::with_capacity(8 * 1024 * 1024, file);
-        read_artifact_header(&mut reader)?;
+        let version = read_artifact_header(&mut reader)?;
         let decoder = zstd::stream::read::Decoder::new(reader)?;
-        Ok(rmp_serde::from_read(decoder)?)
+        Ok((rmp_serde::from_read(decoder)?, version))
     }
 
     /// Encode to a self-contained, versioned artifact byte blob.
@@ -819,7 +827,7 @@ fn write_artifact_header(writer: &mut impl std::io::Write) -> Result<()> {
     Ok(())
 }
 
-fn read_artifact_header(reader: &mut impl std::io::Read) -> Result<()> {
+fn read_artifact_header(reader: &mut impl std::io::Read) -> Result<u16> {
     let mut header = [0_u8; ARTIFACT_HEADER_LEN];
     reader.read_exact(&mut header)?;
     if &header[..8] != ARTIFACT_MAGIC {
@@ -845,5 +853,5 @@ fn read_artifact_header(reader: &mut impl std::io::Read) -> Result<()> {
             "artifact header uses unsupported flags".into(),
         ));
     }
-    Ok(())
+    Ok(version)
 }

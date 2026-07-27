@@ -35,6 +35,7 @@ fn single_file_cli_workflow() {
     let info: serde_json::Value = serde_json::from_slice(&inspect.stdout).expect("inspect JSON");
     assert_eq!(info["ranks"], serde_json::json!(["0"]));
     assert_eq!(info["event_instances"], 3);
+    assert_eq!(info["format_version"], 2);
 
     assert!(padoc()
         .arg("verify")
@@ -64,6 +65,44 @@ fn single_file_cli_workflow() {
     assert_eq!(metadata[0]["tid"], "cpu");
     assert_eq!(metadata[1]["pid"], 8);
     assert_eq!(metadata[1]["tid"], "worker");
+}
+
+#[test]
+fn inspect_reports_the_validated_header_version() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let artifact = dir.path().join("tiny.padoc");
+
+    assert!(padoc()
+        .args(["compress", fixture().to_str().unwrap(), "--output"])
+        .arg(&artifact)
+        .status()
+        .expect("run compress")
+        .success());
+
+    let mut bytes = std::fs::read(&artifact).expect("read artifact");
+    bytes[8..10].copy_from_slice(&1_u16.to_le_bytes());
+    std::fs::write(&artifact, &bytes).expect("write v1 header");
+
+    let inspect = padoc()
+        .arg("inspect")
+        .arg(&artifact)
+        .output()
+        .expect("inspect v1 artifact");
+    assert!(inspect.status.success());
+    let info: serde_json::Value = serde_json::from_slice(&inspect.stdout).expect("inspect JSON");
+    assert_eq!(info["format_version"], 1);
+
+    bytes[8..10].copy_from_slice(&3_u16.to_le_bytes());
+    std::fs::write(&artifact, &bytes).expect("write unsupported header");
+    let inspect = padoc()
+        .arg("inspect")
+        .arg(&artifact)
+        .output()
+        .expect("inspect unsupported artifact");
+    assert!(!inspect.status.success());
+    assert!(
+        String::from_utf8_lossy(&inspect.stderr).contains("unsupported artifact format version 3")
+    );
 }
 
 #[test]

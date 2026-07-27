@@ -15,20 +15,16 @@
 //! 4. Run structural compression top-down on each root.
 
 use ahash::AHashMap;
-use indexmap::IndexMap;
 use std::collections::BTreeMap;
 
 use super::core::TemplateCompressor;
 use crate::event::{Event, Phase};
-use crate::node::{
-    CpuNode, GpuNode, InstanceId, KernelLaunchNode, KernelsLaunchNode, Node, SameCpuNode, TemplateId,
-};
+use crate::node::{CpuNode, GpuNode, InstanceId, KernelLaunchNode, Node, TemplateId};
 use crate::trace::StreamMap;
 
 /// Build the entire `pid -> tid -> ph -> root` tree for one rank.
 pub(crate) fn build_rank(
     compressor: &mut TemplateCompressor,
-    rank: &str,
     streams: &StreamMap,
 ) -> BTreeMap<i64, BTreeMap<String, BTreeMap<u8, Node>>> {
     // 1) Index every GPU event by correlation (only the first match per
@@ -58,10 +54,6 @@ pub(crate) fn build_rank(
             for (phase, events) in phases {
                 let root = build_cpu_tree(
                     compressor,
-                    rank,
-                    *pid,
-                    tid,
-                    *phase,
                     events,
                     &gpu_events,
                     &mut paired_corrs,
@@ -156,10 +148,6 @@ fn event_correlation(event: &Event) -> Option<i64> {
 
 fn build_cpu_tree(
     compressor: &mut TemplateCompressor,
-    _rank: &str,
-    _pid: i64,
-    _tid: &str,
-    _phase: Phase,
     events: &[Event],
     gpu_events: &AHashMap<i64, GpuRef>,
     paired_corrs: &mut ahash::AHashSet<i64>,
@@ -173,21 +161,21 @@ fn build_cpu_tree(
     });
 
     let mut roots: Vec<Node> = Vec::new();
-    let mut stack: Vec<(i64, i64, usize)> = Vec::new(); // (ts, end_ts, idx_in_path)
-    // For each level on the stack we need a place to push children of the
-    // currently-open node.  We track that with `path` parallel to `stack`.
+    // `path` stores the open nodes while `end_times` tracks when each one
+    // stops containing subsequent events.
     let mut path: Vec<Node> = Vec::new();
+    let mut end_times: Vec<i64> = Vec::new();
 
     for ev in sorted {
         let ts = ev.ts;
         let dur = ev.dur.unwrap_or(0);
-        let end_ts = ts + dur.max(0);
+        let end_ts = ts.saturating_add(dur.max(0));
 
-        // Pop stack frames whose end is <= this event's start.
-        while let Some(&(_, top_end, _)) = stack.last() {
-            if top_end <= ts || (dur > 0 && top_end < ts) {
+        // Pop frames that ended before this event or cannot fully contain it.
+        while let Some(&top_end) = end_times.last() {
+            if top_end <= ts || end_ts > top_end {
                 let finished = path.pop().expect("path/stack invariant");
-                stack.pop();
+                end_times.pop();
                 attach_to_parent(&mut roots, &mut path, finished);
             } else {
                 break;
@@ -195,13 +183,14 @@ fn build_cpu_tree(
         }
 
         // Build this event's node.  Pair with GPU kernel if there's a correlation.
-        let new_node = make_cpu_or_kernel_node(compressor, ev, gpu_events, paired_corrs, consumed_gpu);
+        let new_node =
+            make_cpu_or_kernel_node(compressor, ev, gpu_events, paired_corrs, consumed_gpu);
         path.push(new_node);
-        stack.push((ts, end_ts, path.len() - 1));
+        end_times.push(end_ts);
     }
 
     // Drain remaining open frames.
-    while let Some(_top) = stack.pop() {
+    while end_times.pop().is_some() {
         let finished = path.pop().expect("path/stack invariant");
         attach_to_parent(&mut roots, &mut path, finished);
     }
@@ -310,7 +299,10 @@ fn build_gpu_tree(
         templates.push(tid_);
         instances.push(inst);
     }
-    Node::Gpu(GpuNode { templates, instances })
+    Node::Gpu(GpuNode {
+        templates,
+        instances,
+    })
 }
 
 /// Identifier of a single GPU event within one rank.  Used to mark events
@@ -322,32 +314,4 @@ pub(crate) struct GpuKey {
     tid: String,
     phase: Phase,
     idx: usize,
-}
-
-/// Stub used while the lookup_gpu_event helper above is evolving.  This
-/// keeps the compile clean — actual paired-launch IDs are filled in via
-/// the integration done in `core.rs::compress`.
-#[allow(dead_code)]
-pub(crate) fn _kernels_launch_marker() -> Node {
-    Node::KernelsLaunch(KernelsLaunchNode {
-        cpu_template: 0,
-        cpu_instances: Vec::new(),
-        gpu_templates: Vec::new(),
-        gpu_instances: Vec::new(),
-    })
-}
-
-#[allow(dead_code)]
-pub(crate) fn _samecpu_marker() -> Node {
-    Node::SameCpu(SameCpuNode {
-        template: 0,
-        instances: Vec::new(),
-        children: Vec::new(),
-        slots: Vec::new(),
-    })
-}
-
-#[allow(dead_code)]
-pub(crate) fn _imap_marker() -> IndexMap<String, ()> {
-    IndexMap::new()
 }

@@ -91,9 +91,12 @@ pub fn generate_trace(spec: &SyntheticTraceSpec) -> Trace {
                 }
                 // Inter-layer comm.
                 let mut args = AHashMap::new();
-                args.insert("Process Group Name".to_string(), serde_json::json!(format!("tp_group")));
+                args.insert(
+                    "Process Group Name".to_string(),
+                    serde_json::json!(format!("tp_group")),
+                );
                 comm_events.push(Event {
-                    name: format!("nccl:all_reduce"),
+                    name: "nccl:all_reduce".to_string(),
                     ts: now,
                     dur: Some(20),
                     cat: Some("kernel".into()),
@@ -154,7 +157,9 @@ pub fn generate_trace(spec: &SyntheticTraceSpec) -> Trace {
 /// Tiny splitmix64; deterministic and dependency-free.
 struct SplitMix64(u64);
 impl SplitMix64 {
-    fn new(seed: u64) -> Self { Self(seed) }
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
     fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = self.0;
@@ -162,5 +167,7 @@ impl SplitMix64 {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
         z ^ (z >> 31)
     }
-    fn next_i64(&mut self) -> i64 { self.next_u64() as i64 }
+    fn next_i64(&mut self) -> i64 {
+        self.next_u64() as i64
+    }
 }

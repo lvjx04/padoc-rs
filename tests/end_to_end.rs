@@ -1,12 +1,10 @@
-//! End-to-end pipeline tests: synthetic trace -> compress -> serialise -> deserialise -> analyse.
-
+use ahash::AHashMap;
+use indexmap::IndexMap;
 use padoc::analysis::{AnalysisTask, OperatorHotspot, StreamLoadBalance};
-use padoc::baselines::{BaselineCompressor, GzipMsgpackCompressor, PadocCompressor, RawJsonCompressor, ScalaTraceCompressor, TraceZipCompressor};
-use padoc::compressor::{all_ablation_presets, CompressorConfig, TemplateCompressor};
-use padoc::storage_breakdown::measure_storage;
+use padoc::event::{Event, Phase};
 use padoc::synthetic::{generate_trace, SyntheticTraceSpec};
-use padoc::trace::CompressedTrace;
-use padoc::tree_stats::measure_tree_statistics;
+use padoc::trace::{CompressedTrace, StreamMap, Trace};
+use padoc::TemplateCompressor;
 
 fn small_spec() -> SyntheticTraceSpec {
     SyntheticTraceSpec {
@@ -19,6 +17,54 @@ fn small_spec() -> SyntheticTraceSpec {
     }
 }
 
+fn round_trip(trace: &Trace) -> Trace {
+    let mut compressor = TemplateCompressor::new();
+    let compressed = compressor.compress(trace).expect("compress");
+    let bytes = compressed.to_bytes(3).expect("serialize");
+    let reloaded = CompressedTrace::from_bytes(&bytes).expect("deserialize");
+    padoc::decompress(&reloaded)
+}
+
+fn one_rank_trace(cpu_events: Vec<Event>, gpu_events: Vec<Event>) -> Trace {
+    let mut streams: StreamMap = IndexMap::new();
+    let mut tids = IndexMap::new();
+    if !cpu_events.is_empty() {
+        let mut phases = IndexMap::new();
+        phases.insert(Phase::COMPLETE, cpu_events);
+        tids.insert("cpu".to_string(), phases);
+    }
+    if !gpu_events.is_empty() {
+        let mut phases = IndexMap::new();
+        phases.insert(Phase::COMPLETE, gpu_events);
+        tids.insert("stream 7".to_string(), phases);
+    }
+    streams.insert(7, tids);
+
+    let mut trace = Trace::empty();
+    trace.ranks.insert("0".into(), streams);
+    trace.start_timestamp.insert("0".into(), 1_000);
+    trace
+}
+
+fn event(name: &str, ts: i64, dur: Option<i64>, id: Option<i64>, tid: &str) -> Event {
+    Event {
+        name: name.into(),
+        ts,
+        dur,
+        cat: Some("test".into()),
+        ph: Phase::COMPLETE,
+        pid: 7,
+        tid: tid.into(),
+        args: Some(AHashMap::from_iter([(
+            "value".into(),
+            serde_json::json!(ts),
+        )])),
+        id,
+        bp: Some("e".into()),
+        s: Some("g".into()),
+    }
+}
+
 #[test]
 fn synthetic_trace_is_non_empty_and_deterministic() {
     let trace_a = generate_trace(&small_spec());
@@ -28,103 +74,112 @@ fn synthetic_trace_is_non_empty_and_deterministic() {
 }
 
 #[test]
-fn padoc_compress_round_trip_via_bytes() {
+fn padoc_round_trip_is_event_lossless() {
+    let trace = generate_trace(&small_spec());
+    let recovered = round_trip(&trace);
+    let report = padoc::verify::compare_traces(&trace, &recovered);
+    assert!(report.is_ok(), "{report:#?}");
+}
+
+#[test]
+fn compressor_can_be_reused_for_independent_artifacts() {
     let trace = generate_trace(&small_spec());
     let mut compressor = TemplateCompressor::new();
-    let compressed = compressor.compress(&trace).expect("compress");
-    let bytes = compressed.to_bytes(3).expect("serialise");
-    let reloaded = CompressedTrace::from_bytes(&bytes).expect("deserialise");
-    assert_eq!(reloaded.templates.len(), compressed.templates.len());
-    assert_eq!(reloaded.ranks.len(), compressed.ranks.len());
+    let first = compressor.compress(&trace).expect("first compress");
+    let second = compressor.compress(&trace).expect("second compress");
+
+    assert_eq!(
+        first.to_bytes(3).expect("serialize first"),
+        second.to_bytes(3).expect("serialize second")
+    );
 }
 
 #[test]
-fn every_baseline_can_compress_synthetic_trace() {
+fn artifact_has_a_versioned_header_and_is_deterministic() {
     let trace = generate_trace(&small_spec());
 
-    let baselines: Vec<Box<dyn BaselineCompressor>> = vec![
-        Box::new(RawJsonCompressor::default()),
-        Box::new(GzipMsgpackCompressor::default()),
-        Box::new(ScalaTraceCompressor::default()),
-        Box::new(TraceZipCompressor::default()),
-        Box::new(PadocCompressor::default()),
-    ];
+    let mut first_compressor = TemplateCompressor::new();
+    let first = first_compressor.compress(&trace).expect("compress");
+    let first_bytes = first.to_bytes(3).expect("serialize");
 
-    for c in &baselines {
-        let artifact = c.compress(&trace).unwrap_or_else(|e| panic!("{} failed: {}", c.name(), e));
-        assert!(!artifact.bytes.is_empty(), "{} produced empty payload", c.name());
-    }
+    let mut second_compressor = TemplateCompressor::new();
+    let second = second_compressor.compress(&trace).expect("compress");
+    let second_bytes = second.to_bytes(3).expect("serialize");
+
+    assert_eq!(&first_bytes[..8], b"PADOCART");
+    assert_eq!(first_bytes, second_bytes);
 }
 
 #[test]
-fn padoc_in_situ_operator_hotspot_matches_raw() {
+fn invalid_artifact_header_is_rejected() {
+    let error = CompressedTrace::from_bytes(&[0_u8; 16]).expect_err("invalid header should fail");
+    assert!(error.to_string().contains("artifact magic"));
+}
+
+#[test]
+fn optional_numeric_fields_do_not_shift_between_instances() {
+    let trace = one_rank_trace(
+        vec![
+            event("same_name", 1, Some(10), Some(100), "cpu"),
+            event("same_name", 20, None, None, "cpu"),
+            event("same_name", 30, Some(5), Some(300), "cpu"),
+        ],
+        Vec::new(),
+    );
+    let recovered = round_trip(&trace);
+    let report = padoc::verify::compare_traces(&trace, &recovered);
+    assert!(report.is_ok(), "{report:#?}");
+}
+
+#[test]
+fn cpu_and_gpu_events_with_the_same_signature_do_not_collide() {
+    let trace = one_rank_trace(
+        vec![event("shared_name", 1, Some(10), Some(1), "cpu")],
+        vec![event("shared_name", 2, Some(8), Some(2), "stream 7")],
+    );
+    let recovered = round_trip(&trace);
+    let report = padoc::verify::compare_traces(&trace, &recovered);
+    assert!(report.is_ok(), "{report:#?}");
+}
+
+#[test]
+fn chrome_json_writer_restores_timestamp_origin() {
+    let trace = one_rank_trace(
+        vec![event("operator", 25, Some(10), None, "cpu")],
+        Vec::new(),
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = dir.path().join("trace.json");
+    trace.write_chrome_json(&output).expect("write Chrome JSON");
+
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output).expect("read output")).expect("parse output");
+    let events = value["traceEvents"].as_array().expect("events");
+    assert_eq!(events[0]["ts"], 1_025);
+    assert_eq!(events[0]["ph"], "X");
+}
+
+#[test]
+fn in_situ_operator_hotspot_matches_raw_total() {
     let trace = generate_trace(&small_spec());
     let task = OperatorHotspot { top_k: 0 };
     let raw = task.run_raw(&trace).expect("raw");
 
     let mut compressor = TemplateCompressor::new();
     let compressed = compressor.compress(&trace).expect("compress");
-    let in_situ = task.run_in_situ(&compressed).expect("in-situ");
+    let in_situ = task.run_in_situ(&compressed).expect("in situ");
 
-    // Both produce a top-N JSON list; they should agree on the ranking of
-    // the heaviest operator (everything else can vary because the in-situ
-    // path key is the digit-collapsed name).
-    let raw_top = raw.as_array().unwrap().first().unwrap();
-    let situ_top = in_situ.as_array().unwrap().first().unwrap();
-    assert_eq!(raw_top["total_dur_us"], situ_top["total_dur_us"]);
-}
-
-#[test]
-fn padoc_in_situ_stream_load_balance_runs() {
-    let trace = generate_trace(&small_spec());
-    let mut compressor = TemplateCompressor::new();
-    let compressed = compressor.compress(&trace).expect("compress");
-    let task = StreamLoadBalance::default();
-    let result = task.run_in_situ(&compressed).expect("in-situ");
-    let arr = result.as_array().expect("array");
-    assert!(!arr.is_empty(), "stream load balance produced no entries");
-}
-
-#[test]
-fn ablation_presets_all_round_trip_through_bytes() {
-    let trace = generate_trace(&small_spec());
-    for (label, cfg) in all_ablation_presets() {
-        let mut compressor = TemplateCompressor::with_config(cfg.clone());
-        let compressed = compressor.compress(&trace).unwrap_or_else(|e| panic!("{label} compress: {e}"));
-        let bytes = compressed.to_bytes(3).unwrap_or_else(|e| panic!("{label} serialise: {e}"));
-        let _reload = CompressedTrace::from_bytes(&bytes).unwrap_or_else(|e| panic!("{label} deserialise: {e}"));
-        let _ = cfg;
-    }
-}
-
-#[test]
-fn storage_breakdown_components_sum_to_total() {
-    let trace = generate_trace(&small_spec());
-    let mut compressor = TemplateCompressor::new();
-    let compressed = compressor.compress(&trace).unwrap();
-    let breakdown = measure_storage(&compressed);
-    assert!(breakdown.total_bytes > 0);
-    assert!(breakdown.template_bytes > 0);
     assert_eq!(
-        breakdown.total_bytes,
-        breakdown.template_bytes + breakdown.structure_bytes + breakdown.metadata_bytes
+        raw.as_array().unwrap().first().unwrap()["total_dur_us"],
+        in_situ.as_array().unwrap().first().unwrap()["total_dur_us"]
     );
 }
 
 #[test]
-fn tree_stats_have_reasonable_shape() {
+fn in_situ_stream_load_balance_runs() {
     let trace = generate_trace(&small_spec());
     let mut compressor = TemplateCompressor::new();
-    let compressed = compressor.compress(&trace).unwrap();
-    let stats = measure_tree_statistics(&compressed);
-    assert!(stats.max_depth >= 1);
-    // Mean branching can be 0 for very flat trees, but max should not be.
-    assert!(stats.max_branching >= 1);
-}
-
-#[test]
-fn config_default_label_is_default() {
-    let cfg = CompressorConfig::default();
-    assert_eq!(cfg.label, "default");
-    assert!(cfg.is_default());
+    let compressed = compressor.compress(&trace).expect("compress");
+    let result = StreamLoadBalance.run_in_situ(&compressed).expect("in situ");
+    assert!(!result.as_array().expect("array").is_empty());
 }

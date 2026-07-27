@@ -1,0 +1,67 @@
+{
+  "distributedInfo": {
+    "rank": 0
+  },
+  "traceEvents": [
+    {
+      "name": "process_name",
+      "ph": "M",
+      "pid": 7,
+      "tid": "cpu",
+      "args": {
+        "name": "padoc-test"
+      }
+    },
+    {
+      "name": "process_name",
+      "ph": "M",
+      "pid": 8,
+      "tid": "worker",
+      "args": {
+        "name": "padoc-worker"
+      }
+    },
+    {
+      "name": "model.layers.01.linear",
+      "cat": "cpu_op",
+      "ph": "X",
+      "pid": 7,
+      "tid": "cpu",
+      "ts": 1000,
+      "dur": 10,
+      "id": 11,
+      "bp": "e",
+      "s": "g",
+      "args": {
+        "correlation": 42
+      }
+    },
+    {
+      "name": "model.layers.02.linear",
+      "cat": "cpu_op",
+      "ph": "X",
+      "pid": 7,
+      "tid": "cpu",
+      "ts": 1020,
+      "args": {
+        "label": "instant-like"
+      }
+    },
+    {
+      "name": "vectorized_kernel",
+      "cat": "kernel",
+      "ph": "X",
+      "pid": 7,
+      "tid": 7,
+      "ts": 1001,
+      "dur": 8,
+      "id": 12,
+      "bp": "e",
+      "s": "g",
+      "args": {
+        "correlation": 42,
+        "stream": 7
+      }
+    }
+  ]
+}

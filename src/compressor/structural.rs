@@ -137,7 +137,9 @@ fn group_similar(compressor: &TemplateCompressor, children: Vec<Node>) -> Vec<No
 
 fn build_same_cpu(group: Vec<Node>, config: &CompressorConfig) -> Node {
     if group.is_empty() {
-        return Node::Root { children: Vec::new() };
+        return Node::Root {
+            children: Vec::new(),
+        };
     }
 
     // group_similar only feeds us pure-Cpu buckets, so every member is a
@@ -203,8 +205,8 @@ fn anchor_match(child_lists: &[Vec<Node>]) -> (Vec<Node>, Vec<Vec<Node>>) {
         let mut all_found = true;
         for (i, list) in child_lists.iter().enumerate() {
             let mut matched: Option<usize> = None;
-            for j in cursors[i]..list.len() {
-                if list[j].template_index() == target_template {
+            for (j, node) in list.iter().enumerate().skip(cursors[i]) {
+                if node.template_index() == target_template {
                     matched = Some(j);
                     break;
                 }
@@ -247,7 +249,13 @@ fn anchor_match(child_lists: &[Vec<Node>]) -> (Vec<Node>, Vec<Vec<Node>>) {
         let trailers: Vec<Node> = list
             .iter()
             .enumerate()
-            .filter_map(|(j, n)| if positions.contains(&j) { None } else { Some(n.clone()) })
+            .filter_map(|(j, n)| {
+                if positions.contains(&j) {
+                    None
+                } else {
+                    Some(n.clone())
+                }
+            })
             .collect();
         slots.push(trailers);
     }
@@ -271,7 +279,9 @@ fn anchor_match(child_lists: &[Vec<Node>]) -> (Vec<Node>, Vec<Vec<Node>>) {
 /// a `Root` wrapper — slightly worse compression but bit-exact decoding.
 fn merge_anchor_group(group: Vec<Node>) -> Node {
     if group.is_empty() {
-        return Node::Root { children: Vec::new() };
+        return Node::Root {
+            children: Vec::new(),
+        };
     }
     if group.len() == 1 {
         return group.into_iter().next().unwrap();
@@ -325,7 +335,11 @@ fn merge_anchor_group(group: Vec<Node>) -> Node {
             }
         }
     }
-    debug_assert_eq!(instances.len(), child_lists.len(), "SameCpu invariant broken");
+    debug_assert_eq!(
+        instances.len(),
+        child_lists.len(),
+        "SameCpu invariant broken"
+    );
     let (children, slots) = anchor_match(&child_lists);
     Node::SameCpu(SameCpuNode {
         template,
@@ -368,6 +382,7 @@ pub(crate) fn finalize_gpu_template(tmpl: &mut MergeKernelEvent, config: &Compre
     }
     tmpl.ts.compact();
     tmpl.dur.compact();
+    tmpl.id.compact();
     tmpl.pid.compact();
     tmpl.stream_tid.compact();
     tmpl.ph.compact();

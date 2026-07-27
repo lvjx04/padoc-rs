@@ -1,21 +1,22 @@
 //! `TemplateCompressor` driver — coordinates call-tree build, template
 //! formation, structural compression and numeric finalisation.
 //!
-//! Currently a thin scaffold; full implementation is filled in module-by-module.
-
 use ahash::AHashMap;
 
 use super::config::CompressorConfig;
-use crate::event::{ArgColumn, Event, EventSignature, MergeEvent, MergeKernelEvent, NameNums, Template};
+use crate::event::{
+    ArgColumn, Event, EventSignature, MergeEvent, MergeKernelEvent, NameNums, Template,
+};
 use crate::node::TemplateId;
 use crate::trace::{CompressedTrace, Trace};
-use crate::{Error, Result};
+use crate::Result;
 
-/// Stateful compressor.  Reset between runs via [`Self::with_config`].
+/// Stateful compressor for independent trace artifacts.
 pub struct TemplateCompressor {
-    pub config: CompressorConfig,
+    pub(crate) config: CompressorConfig,
     pub(crate) templates: Vec<Template>,
-    pub(crate) signature_index: AHashMap<EventSignature, TemplateId>,
+    pub(crate) cpu_signature_index: AHashMap<EventSignature, TemplateId>,
+    pub(crate) gpu_signature_index: AHashMap<EventSignature, TemplateId>,
 }
 
 impl TemplateCompressor {
@@ -23,26 +24,33 @@ impl TemplateCompressor {
         Self::with_config(CompressorConfig::default())
     }
 
-    pub fn with_config(config: CompressorConfig) -> Self {
+    pub(crate) fn with_config(config: CompressorConfig) -> Self {
         Self {
             config,
             templates: Vec::new(),
-            signature_index: AHashMap::new(),
+            cpu_signature_index: AHashMap::new(),
+            gpu_signature_index: AHashMap::new(),
         }
     }
 
     /// Compress every rank in `trace`.  This is the main entry point.
     pub fn compress(&mut self, trace: &Trace) -> Result<CompressedTrace> {
-        let mut compressed = CompressedTrace::default();
-        compressed.metadata = trace.metadata.clone();
-        compressed.start_timestamp = trace.start_timestamp.clone();
+        self.templates.clear();
+        self.cpu_signature_index.clear();
+        self.gpu_signature_index.clear();
+
+        let mut compressed = CompressedTrace {
+            metadata: trace.metadata.clone(),
+            start_timestamp: trace.start_timestamp.clone(),
+            ..CompressedTrace::default()
+        };
 
         for rank in trace.rank_ids() {
             let rank_streams = match trace.ranks.get(&rank) {
                 Some(s) => s,
                 None => continue,
             };
-            let rank_root = super::call_tree::build_rank(self, rank.as_str(), rank_streams);
+            let rank_root = super::call_tree::build_rank(self, rank_streams);
             compressed.ranks.insert(rank, rank_root);
         }
 
@@ -52,58 +60,10 @@ impl TemplateCompressor {
         Ok(compressed)
     }
 
-    /// Build the call tree for one rank with private template state.  Used
-    /// by parallel compression: every worker calls this, the resulting
-    /// shards are then folded into a single global template table by
-    /// [`super::merge::merge_shards`].
-    ///
-    /// The returned shard's templates are **un-finalised** — SLP / name
-    /// transpose / args dedup have to run after the merge so they see the
-    /// full set of cross-rank instances.
-    pub fn compress_rank(
-        config: &CompressorConfig,
-        rank: &str,
-        trace: &Trace,
-    ) -> super::merge::RankShard {
-        let mut compressor = TemplateCompressor::with_config(config.clone());
-        let root = if let Some(streams) = trace.ranks.get(rank) {
-            super::call_tree::build_rank(&mut compressor, rank, streams)
-        } else {
-            std::collections::BTreeMap::new()
-        };
-        super::merge::RankShard {
-            rank: rank.to_string(),
-            templates: std::mem::take(&mut compressor.templates),
-            root,
-            metadata: trace.metadata.get(rank).cloned(),
-            start_timestamp: trace.start_timestamp.get(rank).copied(),
-        }
-    }
-
-    /// Finalise the in-memory template table.  Public so `merge_shards` can
-    /// reuse the same logic on the deduplicated global table.
-    pub fn finalize_in_place(&mut self) {
-        self.finalize_templates();
-    }
-
-    /// Replace the internal templates Vec with `templates`.  Used by
-    /// `merge_shards` to feed the merged global table through the existing
-    /// finalisation pipeline.
-    pub fn set_templates_for_finalize(&mut self, templates: Vec<Template>) {
-        self.templates = templates;
-        self.signature_index.clear();
-    }
-
-    /// Move-out the internal templates Vec.  Pairs with
-    /// `set_templates_for_finalize` after `finalize_in_place`.
-    pub fn take_templates(&mut self) -> Vec<Template> {
-        std::mem::take(&mut self.templates)
-    }
-
     /// Look up an existing template id by signature, or create a fresh one.
     pub(crate) fn intern_event_template(&mut self, event: &Event) -> (TemplateId, u32) {
         let signature = event.template_signature();
-        if let Some(&tid) = self.signature_index.get(&signature) {
+        if let Some(&tid) = self.cpu_signature_index.get(&signature) {
             let inst = append_event_to_template(&mut self.templates[tid as usize], event);
             return (tid, inst);
         }
@@ -124,7 +84,7 @@ impl TemplateCompressor {
         };
         let inst = append_to_merge(&mut tmpl, event);
         self.templates.push(Template::Cpu(tmpl));
-        self.signature_index.insert(signature, tid);
+        self.cpu_signature_index.insert(signature, tid);
         (tid, inst)
     }
 
@@ -136,8 +96,9 @@ impl TemplateCompressor {
         gpu_stream_tid: &str,
     ) -> (TemplateId, u32) {
         let signature = event.template_signature();
-        if let Some(&tid) = self.signature_index.get(&signature) {
-            let inst = append_kernel_to_template(&mut self.templates[tid as usize], event, gpu_stream_tid);
+        if let Some(&tid) = self.gpu_signature_index.get(&signature) {
+            let inst =
+                append_kernel_to_template(&mut self.templates[tid as usize], event, gpu_stream_tid);
             return (tid, inst);
         }
         let tid = self.templates.len() as TemplateId;
@@ -149,13 +110,15 @@ impl TemplateCompressor {
         let mut tmpl = MergeKernelEvent {
             name_pattern: signature.normalized_name.clone(),
             cat: event.cat.clone(),
+            bp: event.bp.clone(),
+            s: event.s.clone(),
             arg_keys,
             args_columns,
             ..Default::default()
         };
         let inst = append_to_kernel(&mut tmpl, event, gpu_stream_tid);
         self.templates.push(Template::Gpu(tmpl));
-        self.signature_index.insert(signature, tid);
+        self.gpu_signature_index.insert(signature, tid);
         (tid, inst)
     }
 
@@ -198,7 +161,9 @@ fn append_event_to_template(tmpl: &mut Template, event: &Event) -> u32 {
 fn append_kernel_to_template(tmpl: &mut Template, event: &Event, gpu_stream_tid: &str) -> u32 {
     match tmpl {
         Template::Gpu(t) => append_to_kernel(t, event, gpu_stream_tid),
-        Template::Cpu(_) => panic!("event signature collision: gpu event hashing into cpu template"),
+        Template::Cpu(_) => {
+            panic!("event signature collision: gpu event hashing into cpu template")
+        }
     }
 }
 
@@ -217,12 +182,19 @@ pub(crate) fn append_to_merge(tmpl: &mut MergeEvent, event: &Event) -> u32 {
     inst
 }
 
-pub(crate) fn append_to_kernel(tmpl: &mut MergeKernelEvent, event: &Event, gpu_stream_tid: &str) -> u32 {
+pub(crate) fn append_to_kernel(
+    tmpl: &mut MergeKernelEvent,
+    event: &Event,
+    gpu_stream_tid: &str,
+) -> u32 {
     let nums = crate::utils::extract_digit_runs(&event.name);
     let inst = tmpl.ts.len() as u32;
     tmpl.ts.push(event.ts);
     if let Some(d) = event.dur {
         tmpl.dur.push(d);
+    }
+    if let Some(i) = event.id {
+        tmpl.id.push(i);
     }
     tmpl.pid.push(event.pid);
     tmpl.stream_tid.push(gpu_stream_tid.to_string());
@@ -254,9 +226,4 @@ fn push_name_nums(slot: &mut NameNums, nums: Vec<String>) {
         NameNums::Rows(rows) => rows.push(nums),
         NameNums::Columnar(_) => panic!("cannot append after compress_name_nums"),
     }
-}
-
-#[allow(dead_code)]
-pub(crate) fn placeholder_decompress(_ct: &CompressedTrace) -> Result<Trace> {
-    Err(Error::Other("decompression not yet implemented".into()))
 }

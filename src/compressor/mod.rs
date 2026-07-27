@@ -19,10 +19,7 @@ mod call_tree;
 mod config;
 mod core;
 mod decompress;
-mod merge;
 mod structural;
 
-pub use config::{all_ablation_presets, CompressorConfig};
 pub use core::TemplateCompressor;
 pub use decompress::decompress;
-pub use merge::{merge_shards, RankShard};

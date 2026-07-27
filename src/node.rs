@@ -32,7 +32,9 @@ pub type InstanceId = u32;
 pub enum Node {
     /// Sentinel root with no template, used when a forest of independent root
     /// nodes is needed.
-    Root { children: Vec<Node> },
+    Root {
+        children: Vec<Node>,
+    },
 
     Cpu(CpuNode),
     SameCpu(SameCpuNode),

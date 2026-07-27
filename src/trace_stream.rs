@@ -27,7 +27,7 @@
 
 use std::fmt;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use ahash::AHashMap;
@@ -36,7 +36,7 @@ use serde::de::{self, DeserializeSeed, Deserializer as _, MapAccess, SeqAccess, 
 use serde::Deserialize;
 
 use crate::event::{Event, Phase};
-use crate::trace::{StreamMap, Trace};
+use crate::trace::{MetadataEvent, StreamMap, Trace};
 use crate::Result;
 
 /// 8 MiB BufReader window — large enough that serde_json's lookahead never
@@ -45,22 +45,35 @@ const BUFFER_SIZE: usize = 8 * 1024 * 1024;
 
 pub fn parse_chrome_trace_stream(path: &Path) -> Result<Trace> {
     let file = File::open(path)?;
-    let reader = BufReader::with_capacity(BUFFER_SIZE, file);
+    parse_chrome_trace_reader(file, path)
+}
+
+pub fn parse_chrome_trace_gzip(path: &Path) -> Result<Trace> {
+    let file = File::open(path)?;
+    parse_chrome_trace_reader(flate2::read::GzDecoder::new(file), path)
+}
+
+fn parse_chrome_trace_reader(reader: impl Read, path: &Path) -> Result<Trace> {
+    let reader = BufReader::with_capacity(BUFFER_SIZE, reader);
     let mut de = serde_json::Deserializer::from_reader(reader);
 
     let mut state = ParserState {
         rank: None,
         streams: IndexMap::new(),
-        metadata: AHashMap::new(),
+        metadata: Vec::new(),
         min_ts: i64::MAX,
-        source_stem: path.file_stem().and_then(|s| s.to_str()).map(str::to_owned),
+        source_stem: source_stem(path),
     };
 
     de.deserialize_map(TopLevelVisitor { state: &mut state })
         .map_err(|e| crate::Error::Other(format!("streaming chrome-trace parse failed: {e}")))?;
 
     // Per-rank ts origin: subtract the smallest ts so the column is small.
-    let start_ts = if state.min_ts == i64::MAX { 0 } else { state.min_ts };
+    let start_ts = if state.min_ts == i64::MAX {
+        0
+    } else {
+        state.min_ts
+    };
     if start_ts != 0 {
         for threads in state.streams.values_mut() {
             for phases in threads.values_mut() {
@@ -85,10 +98,19 @@ pub fn parse_chrome_trace_stream(path: &Path) -> Result<Trace> {
     Ok(trace)
 }
 
+fn source_stem(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name
+        .strip_suffix(".json.gz")
+        .or_else(|| name.strip_suffix(".json"))
+        .unwrap_or(name);
+    Some(stem.to_owned())
+}
+
 struct ParserState {
     rank: Option<String>,
     streams: StreamMap,
-    metadata: AHashMap<String, serde_json::Value>,
+    metadata: Vec<MetadataEvent>,
     min_ts: i64,
     source_stem: Option<String>,
 }
@@ -104,11 +126,12 @@ impl ParserState {
         let name = raw.name.unwrap_or_default();
 
         if phase == Phase::METADATA {
-            let val = raw
-                .args
-                .map(serde_json::Value::Object)
-                .unwrap_or(serde_json::Value::Null);
-            self.metadata.insert(name, val);
+            self.metadata.push(MetadataEvent {
+                name,
+                pid: raw.pid.unwrap_or(0),
+                tid: raw.tid.unwrap_or_else(|| "0".to_string()),
+                args: raw.args.map(serde_json::Value::Object),
+            });
             return;
         }
 
@@ -186,7 +209,10 @@ impl<'de> Visitor<'de> for TopLevelVisitor<'_> {
         write!(f, "chrome-trace JSON object")
     }
 
-    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> std::result::Result<Self::Value, M::Error> {
+    fn visit_map<M: MapAccess<'de>>(
+        self,
+        mut map: M,
+    ) -> std::result::Result<Self::Value, M::Error> {
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "traceEvents" => {
@@ -194,8 +220,11 @@ impl<'de> Visitor<'de> for TopLevelVisitor<'_> {
                 }
                 "distributedInfo" => {
                     let v: serde_json::Value = map.next_value()?;
-                    if let Some(rank) = v.get("rank").and_then(|r| r.as_i64()) {
-                        self.state.rank = Some(rank.to_string());
+                    if let Some(rank) = v.get("rank") {
+                        self.state.rank = rank
+                            .as_i64()
+                            .map(|rank| rank.to_string())
+                            .or_else(|| rank.as_str().map(str::to_owned));
                     }
                 }
                 _ => {
@@ -218,7 +247,10 @@ struct TraceEventsSeed<'a> {
 impl<'de> DeserializeSeed<'de> for TraceEventsSeed<'_> {
     type Value = ();
 
-    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> std::result::Result<(), D::Error> {
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<(), D::Error> {
         deserializer.deserialize_seq(TraceEventsSeqVisitor { state: self.state })
     }
 }
@@ -234,7 +266,10 @@ impl<'de> Visitor<'de> for TraceEventsSeqVisitor<'_> {
         write!(f, "traceEvents array")
     }
 
-    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> std::result::Result<Self::Value, S::Error> {
+    fn visit_seq<S: SeqAccess<'de>>(
+        self,
+        mut seq: S,
+    ) -> std::result::Result<Self::Value, S::Error> {
         while let Some(raw) = seq.next_element::<RawEvent>()? {
             self.state.absorb(raw);
         }
@@ -284,7 +319,10 @@ fn deserialize_lossy_i64<'de, D: de::Deserializer<'de>>(
     impl<'de> Visitor<'de> for LossyI64Visitor {
         type Value = Option<i64>;
         fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "integer (possibly written as float, string label, null, or absent)")
+            write!(
+                f,
+                "integer (possibly written as float, string label, null, or absent)"
+            )
         }
         fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<Self::Value, E> {
             Ok(Some(v))
@@ -324,7 +362,9 @@ fn deserialize_lossy_i64<'de, D: de::Deserializer<'de>>(
     d.deserialize_any(LossyI64Visitor)
 }
 
-fn deserialize_tid<'de, D: de::Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
+fn deserialize_tid<'de, D: de::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
     struct TidVisitor;
     impl<'de> Visitor<'de> for TidVisitor {
         type Value = Option<String>;

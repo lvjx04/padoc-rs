@@ -12,19 +12,25 @@ use crate::Result;
 pub struct StreamLoadBalance;
 
 impl AnalysisTask for StreamLoadBalance {
-    fn name(&self) -> &str { "stream_load_balance" }
+    fn name(&self) -> &str {
+        "stream_load_balance"
+    }
 
     fn run_raw(&self, trace: &Trace) -> Result<Value> {
         let mut by_stream: AHashMap<(i64, &str), i64> = AHashMap::new();
         for (_rank, pid, tid, _ph, events) in trace.iter_streams() {
-            if !tid.contains("stream") { continue; }
+            if !tid.contains("stream") {
+                continue;
+            }
             let total: i64 = events.iter().map(|ev| ev.dur.unwrap_or(0)).sum();
             *by_stream.entry((pid, tid)).or_insert(0) += total;
         }
         Ok(to_sorted_json(by_stream))
     }
 
-    fn supports_in_situ(&self) -> bool { true }
+    fn supports_in_situ(&self) -> bool {
+        true
+    }
 
     fn run_in_situ(&self, compressed: &CompressedTrace) -> Result<Value> {
         let mut by_stream: AHashMap<(i64, &str), i64> = AHashMap::new();
@@ -38,7 +44,9 @@ impl AnalysisTask for StreamLoadBalance {
                 // Most GPU templates compact to a `Constant` pid/stream_tid;
                 // the typed enums encode that natively, so we can sum the
                 // whole `dur` column once and bypass per-instance hashing.
-                if let (Some(pid), Some(tid)) = (constant_i64_col(&t.pid), constant_str_col(&t.stream_tid)) {
+                if let (Some(pid), Some(tid)) =
+                    (constant_i64_col(&t.pid), constant_str_col(&t.stream_tid))
+                {
                     let total = t.dur.sum_i64();
                     *by_stream.entry((pid, tid)).or_insert(0) += total;
                 } else {
@@ -70,7 +78,7 @@ fn constant_str_col(col: &StringColumn) -> Option<&str> {
 
 fn to_sorted_json(map: AHashMap<(i64, &str), i64>) -> Value {
     let mut entries: Vec<((i64, &str), i64)> = map.into_iter().collect();
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     Value::Array(entries.into_iter().map(|((pid, tid), total)| {
         serde_json::json!({"stream": format!("{pid}:{tid}"), "busy_us": total})
     }).collect())

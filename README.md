@@ -73,12 +73,12 @@ rejects unknown versions, codecs, and flags.
 
 These full-input results use artifact format v2:
 
-| Dataset | Ranks | Events | Input bytes | PADOC bytes | Size/input | Compression | Wall time | Peak RSS (KiB) | Lossless |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| LeWorldModel | 2 | 3,469,389 | 927,329,976 | 38,333,493 | 4.1337% | 24.191x | 8.37s | 3,564,180 | 2/2 |
-| Qwen3 | 256 | 33,813,574 | 7,422,237,193 | 310,439,485 | 4.1826% | 23.909x | 14.66s | 5,663,212 | 256/256 |
-| UnifoLM world model | 4 | 80,223,071 | 24,087,743,045 | 774,296,478 | 3.2145% | 31.109x | 3m27.17s | 54,514,728 | 4/4 |
-| LLaMA profiler | 1,024 | 301,288,116 | 75,106,905,369 | 2,732,778,989 | 3.6385% | 27.484x | 1m22.07s | 6,807,336 | 1,024/1,024 |
+| Dataset | Ranks | Events | Input bytes | PADOC bytes | Size/input | Compression | Wall time | Peak RSS (KiB) | Workers | Lossless |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| LeWorldModel | 2 | 3,469,389 | 927,329,976 | 38,333,493 | 4.1337% | 24.191x | 8.37s | 3,564,180 | 2 | 2/2 |
+| Qwen3 | 256 | 33,813,574 | 7,422,237,193 | 310,439,485 | 4.1826% | 23.909x | 14.66s | 5,663,212 | 16 | 256/256 |
+| UnifoLM world model | 4 | 80,223,071 | 24,087,743,045 | 774,296,478 | 3.2145% | 31.109x | 3m27.17s | 54,514,728 | 2 | 4/4 |
+| LLaMA profiler | 1,024 | 301,288,116 | 75,106,905,369 | 2,732,778,989 | 3.6385% | 27.484x | 1m22.07s | 6,807,336 | 16 | 1,024/1,024 |
 
 The results were produced from commit
 `a439ad9e86c14c05a096c23aab893de951e9ec4f`. Compression is CPU-side and used

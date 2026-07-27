@@ -86,6 +86,8 @@ impl Event {
             cat: self.cat.clone(),
             bp: self.bp.clone(),
             s: self.s.clone(),
+            has_dur: self.dur.is_some(),
+            has_id: self.id.is_some(),
             arg_keys,
         }
     }
@@ -99,6 +101,8 @@ pub struct EventSignature {
     pub cat: Option<String>,
     pub bp: Option<String>,
     pub s: Option<String>,
+    pub has_dur: bool,
+    pub has_id: bool,
     pub arg_keys: SmallVec<[String; 8]>,
 }
 
@@ -174,7 +178,8 @@ impl NumColumn {
                 // Build path appends in I64 mode; compact variants only appear
                 // post-finalise.  Promote back to I64 to stay correct if ever
                 // hit.
-                let mut values: Vec<i64> = (0..self.len()).map(|i| self.get(i).unwrap_or(0)).collect();
+                let mut values: Vec<i64> =
+                    (0..self.len()).map(|i| self.get(i).unwrap_or(0)).collect();
                 values.push(v);
                 *self = NumColumn::I64(values);
             }
@@ -192,11 +197,14 @@ impl NumColumn {
             return;
         }
         // Promote both sides to I64 first; compactification happens at finalize.
-        let extra: Vec<i64> = (0..other.len()).map(|i| other.get(i).unwrap_or(0)).collect();
+        let extra: Vec<i64> = (0..other.len())
+            .map(|i| other.get(i).unwrap_or(0))
+            .collect();
         match self {
             NumColumn::I64(values) => values.extend(extra),
             _ => {
-                let mut values: Vec<i64> = (0..self.len()).map(|i| self.get(i).unwrap_or(0)).collect();
+                let mut values: Vec<i64> =
+                    (0..self.len()).map(|i| self.get(i).unwrap_or(0)).collect();
                 values.extend(extra);
                 *self = NumColumn::I64(values);
             }
@@ -324,7 +332,7 @@ impl StringColumn {
             StringColumn::PerInstance(values) => values.push(v),
             StringColumn::Constant { len, value } => {
                 // Build-path: convert back to PerInstance.
-                let mut values: Vec<String> = std::iter::repeat(value.clone()).take(*len as usize).collect();
+                let mut values = vec![value.clone(); *len as usize];
                 values.push(v);
                 *self = StringColumn::PerInstance(values);
             }
@@ -344,7 +352,7 @@ impl StringColumn {
             .map(|i| other.get(i).map(str::to_owned).unwrap_or_default())
             .collect();
         match self {
-            StringColumn::PerInstance(v) => v.extend(other_values.drain(..)),
+            StringColumn::PerInstance(v) => v.append(&mut other_values),
             _ => {
                 let self_len = self.len();
                 let mut values: Vec<String> = (0..self_len)
@@ -428,7 +436,7 @@ impl PhaseColumn {
             PhaseColumn::Empty => *self = PhaseColumn::PerInstance(vec![ph.0]),
             PhaseColumn::PerInstance(values) => values.push(ph.0),
             PhaseColumn::Constant { len, value } => {
-                let mut values: Vec<u8> = std::iter::repeat(*value).take(*len as usize).collect();
+                let mut values = vec![*value; *len as usize];
                 values.push(ph.0);
                 *self = PhaseColumn::PerInstance(values);
             }
@@ -448,7 +456,7 @@ impl PhaseColumn {
             .map(|i| other.get(i).map(|p| p.0).unwrap_or(b'X'))
             .collect();
         match self {
-            PhaseColumn::PerInstance(v) => v.extend(other_values.drain(..)),
+            PhaseColumn::PerInstance(v) => v.append(&mut other_values),
             _ => {
                 let self_len = self.len();
                 let mut values: Vec<u8> = (0..self_len)
@@ -532,9 +540,9 @@ impl ArgColumn {
             ArgColumn::Constant(v) => Some(v.clone()),
             ArgColumn::I32(v) => v.get(i).map(|x| serde_json::Value::from(*x as i64)),
             ArgColumn::I64(v) => v.get(i).map(|x| serde_json::Value::from(*x)),
-            ArgColumn::F64(v) => v.get(i).and_then(|x| {
-                serde_json::Number::from_f64(*x).map(serde_json::Value::Number)
-            }),
+            ArgColumn::F64(v) => v
+                .get(i)
+                .and_then(|x| serde_json::Number::from_f64(*x).map(serde_json::Value::Number)),
             ArgColumn::Bool(v) => v.get(i).map(|x| serde_json::Value::Bool(*x != 0)),
             ArgColumn::Str(v) => v.get(i).cloned().map(serde_json::Value::String),
             ArgColumn::StrDict { dict, ids } => ids.get(i).and_then(|id| {
@@ -643,10 +651,7 @@ impl ArgColumn {
             return;
         }
         if all_float {
-            let floats: Vec<f64> = values
-                .iter()
-                .map(|v| v.as_f64().unwrap_or(0.0))
-                .collect();
+            let floats: Vec<f64> = values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
             *self = ArgColumn::F64(floats);
             return;
         }
@@ -679,7 +684,6 @@ impl ArgColumn {
                 let strs: Vec<String> = ids.iter().map(|i| dict[*i as usize].clone()).collect();
                 *self = ArgColumn::Str(strs);
             }
-            return;
         }
         // Heterogeneous — keep as PerInstance but the existing storage already
         // represents that, so nothing to do.
@@ -721,6 +725,10 @@ impl DigitColumn {
             DigitColumn::I64 { values, .. } => values.len(),
             DigitColumn::Strings(v) => v.len(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn get_string(&self, i: usize) -> String {
@@ -814,10 +822,13 @@ pub struct MergeKernelEvent {
     pub name_pattern: String,
     pub name_nums: NameNums,
     pub cat: Option<String>,
+    pub bp: Option<String>,
+    pub s: Option<String>,
     pub arg_keys: Vec<String>,
     pub args_columns: Vec<ArgColumn>,
     pub ts: NumColumn,
     pub dur: NumColumn,
+    pub id: NumColumn,
     pub pid: NumColumn,
     pub stream_tid: StringColumn,
     pub ph: PhaseColumn,

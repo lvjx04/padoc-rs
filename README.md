@@ -1,113 +1,116 @@
-# padoc — AI profiler trace compression in Rust
+# PADOC
 
-Clean rewrite of the original Python `perflowai/padoc` package.  Same paper,
-same compression / analysis semantics, much faster pipeline and a single
-crate that can be used as a CLI binary or a library.
+PADOC is a Rust tool for compressing large AI profiler traces into a compact,
+queryable representation. It accepts Chrome trace JSON produced by tools such
+as PyTorch Profiler and supports analysis without first rebuilding every raw
+event.
+
+The public implementation favors predictable resource use and lossless event
+reconstruction. Each input file is compressed independently; PADOC does not
+perform cross-rank template merging.
+
+## Install
+
+PADOC currently builds from source with the stable Rust toolchain:
+
+```bash
+git clone https://github.com/lvjx04/padoc-rs.git
+cd padoc-rs
+cargo build --release
+```
+
+The binary is written to `target/release/padoc`.
 
 ## Quick start
 
+Compress one trace:
+
 ```bash
-# Build
-cargo build --release
-
-# List compressors and analysis tasks
-./target/release/padoc list
-
-# Compress a chrome-trace JSON file
-./target/release/padoc compress trace.json -o trace.pdc
-
-# Run an analysis task on the raw trace
-./target/release/padoc analyze trace.json --task operator_hotspot
-
-# Bench every compressor on a set of traces
-./target/release/padoc bench compress --datasets a.json,b.json
-
-# Synthetic-trace scalability sweep over GPU count
-./target/release/padoc bench scalability --dimension gpus --values 1,2,4,8
+padoc compress trace.json --output trace.padoc
 ```
 
-## Architecture
+Inspect and verify it:
 
-```
-src/
-├── lib.rs                       crate-level re-exports + Error
-├── main.rs                      CLI driver (clap)
-├── event.rs                     Event / MergeEvent / KernelEvent / templates
-├── node.rs                      compressed call-tree node enum
-├── trace.rs                     Trace + CompressedTrace + chrome-trace JSON I/O
-├── slp.rs                       segmented linear predictor
-├── synthetic.rs                 deterministic synthetic trace generator
-├── storage_breakdown.rs         per-component byte profiling
-├── tree_stats.rs                tree-shape statistics
-├── utils.rs                     name normalisation + logging
-├── compressor/
-│   ├── mod.rs
-│   ├── config.rs                CompressorConfig + ablation presets
-│   ├── core.rs                  TemplateCompressor driver
-│   ├── call_tree.rs             per-rank tree build (CPU stack + GPU pairing)
-│   └── structural.rs            SameCpu grouping + anchor matching + finalise
-├── baselines/
-│   ├── mod.rs                   BaselineCompressor trait + registry
-│   ├── raw.rs                   raw_json / raw_msgpack
-│   ├── gzip.rs                  gzip_json / gzip_msgpack
-│   ├── scalatrace.rs            ScalaTrace adaptation
-│   ├── tracezip.rs              TraceZip adaptation
-│   └── padoc.rs                 wrapper over TemplateCompressor
-├── analysis/
-│   ├── mod.rs                   AnalysisTask trait + registry
-│   ├── operator_hotspot.rs      [in-situ] top-N operator dur
-│   ├── stream_load_balance.rs   [in-situ] per-GPU-stream busy time
-│   ├── layer_operator_balance.rs[in-situ] per-layer dur
-│   └── parallel_group.rs        TP/DP/PP/EP inference from NCCL ops
-└── bench/
-    ├── mod.rs
-    ├── metrics.rs               record types
-    ├── runner.rs                compression / analysis matrices
-    ├── scalability.rs           synthetic sweep runner
-    ├── parallel.rs              rayon-based throughput benchmark
-    └── report.rs                markdown rendering
+```bash
+padoc inspect trace.padoc
+padoc verify trace.json --artifact trace.padoc
 ```
 
-## Design choices
+Reconstruct Chrome trace JSON:
 
-| | Python (old) | Rust (this repo) |
-|---|---|---|
-| node hierarchy | 5 classes | one `Node` enum |
-| event hierarchy | 4 classes | `Event` + `Template` enum |
-| sibling grouping | O(n²) double loop | hash-bucket O(n) |
-| JSON ingest | `json` stdlib | `simd-json` |
-| storage format | msgpack (no zstd) | msgpack + zstd |
-| HTA baselines | yes | dropped per design |
-| Python interop | n/a | none — pure Rust |
+```bash
+padoc decompress trace.padoc --output restored.json
+```
 
-## Status (initial scaffold)
+For a directory of per-rank trace files, PADOC creates one artifact per input
+and a small manifest:
 
-Working end-to-end on real PyTorch profiler traces (ops + kernel + nccl):
+```bash
+padoc compress-dir ./traces --output ./artifacts --workers 4
+```
 
-- chrome-trace JSON ingestion via `simd-json`
-- TemplateCompressor with full call-tree + structural compression + anchor matching
-- All 5 baselines + ablation presets round-trip
-- 4 analysis tasks (3 with PADOC in-situ implementation)
-- Bench harness CLI: `bench compress` / `bench analyze` / `bench scalability` / `bench parallel`
-- Synthetic trace generator
-- Storage breakdown + tree-shape stats
-- 15/15 unit + integration tests pass
+`--workers` bounds file-level concurrency. It does not merge ranks or create
+additional compression threads inside an artifact.
 
-Reference numbers on `tests/example_trace/profiler_585.json` (294,918 events, 69.8 MiB):
+## In-situ analysis
 
-| compressor | ratio | secs | MB/s |
-|---|---:|---:|---:|
-| raw_json | 1.26x | 0.45 | 156 |
-| gzip_json | 21.5x | 0.75 | 93 |
-| scalatrace | 34.2x | 0.28 | 252 |
-| tracezip | 29.1x | 0.26 | 268 |
-| padoc | 25.5x | 0.32 | 219 |
+List the available tasks:
 
-PADOC is currently behind ScalaTrace because the foundation does not yet
-SLP-encode the per-template numeric arrays on disk (we rely on the trailing
-zstd pass).  The remaining work to land paper-quality PADOC numbers is
-captured in [HANDOFF.md](HANDOFF.md).
+```bash
+padoc list
+```
+
+Run a task directly on an artifact:
+
+```bash
+padoc analyze trace.padoc --task operator_hotspot
+padoc analyze trace.padoc --task stream_load_balance
+```
+
+The initial public task set is intentionally small. Tasks that rely on
+workload-specific naming or incomplete CPU-GPU attribution remain on the
+research branch until their semantics are stable.
+
+## Supported data
+
+PADOC currently supports Chrome trace JSON and gzip-compressed `.json.gz`
+objects with a `traceEvents` array. It preserves the event fields used by AI
+profilers:
+
+- `name`, `ts`, `dur`, `cat`, `ph`, `pid`, and `tid`
+- `args`, including nested JSON values
+- optional `id`, `bp`, and `s`
+- metadata names, process/thread coordinates, argument payloads, duplicates,
+  and input order
+
+Timestamps are normalized internally and restored during JSON reconstruction.
+Event ordering may differ after decompression, but the supported event fields
+are verified as a multiset.
+
+The artifact format is versioned but is still pre-1.0. Compatibility guarantees
+will begin with the first stable release.
+
+## Design
+
+PADOC groups events by stable signatures, stores per-instance values in typed
+columns, and retains a compact call-tree representation for direct analysis.
+Large JSON files are parsed as a stream, and artifact payloads are serialized
+directly through zstd without materializing an intermediate MessagePack buffer.
+
+See [docs/design.md](docs/design.md) and [docs/artifact-format.md](docs/artifact-format.md)
+for the current engineering contract.
+
+## Development
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+```
+
+Research baselines and experiment drivers are maintained separately on the
+`research/baselines` branch.
 
 ## License
 
-Apache-2.0.
+Apache License 2.0. See [LICENSE](LICENSE).

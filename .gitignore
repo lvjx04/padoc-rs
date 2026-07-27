@@ -1,7 +1,9 @@
 /target
-*.log
-*.tmp
-*.bak
-*.zst
 *.bin
+*.log
+*.padoc
+*.tmp
+*.zst
 .DS_Store
+.idea/
+.vscode/

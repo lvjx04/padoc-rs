@@ -35,17 +35,14 @@ pub fn decompress(compressed: &CompressedTrace) -> Trace {
         for (pid, tid_map) in pid_map {
             for (tid, ph_map) in tid_map {
                 for (ph_byte, node) in ph_map {
-                    let phase = Phase(*ph_byte);
-                    visit(
-                        node,
+                    let context = DecodeContext {
                         rank,
-                        *pid,
-                        tid,
-                        phase,
-                        &compressed.templates,
-                        start_ts,
-                        &mut trace,
-                    );
+                        cpu_pid: *pid,
+                        cpu_tid: tid,
+                        cpu_phase: Phase(*ph_byte),
+                        templates: &compressed.templates,
+                    };
+                    visit(node, &context, &mut trace);
                 }
             }
         }
@@ -56,90 +53,85 @@ pub fn decompress(compressed: &CompressedTrace) -> Trace {
     trace
 }
 
-fn visit(
-    node: &Node,
-    rank: &str,
+struct DecodeContext<'a> {
+    rank: &'a str,
     cpu_pid: i64,
-    cpu_tid: &str,
+    cpu_tid: &'a str,
     cpu_phase: Phase,
-    templates: &[Template],
-    start_ts: i64,
-    trace: &mut Trace,
-) {
+    templates: &'a [Template],
+}
+
+fn visit(node: &Node, context: &DecodeContext<'_>, trace: &mut Trace) {
     match node {
         Node::Root { children } => {
             for c in children {
-                visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+                visit(c, context, trace);
             }
         }
         Node::Cpu(n) => {
-            emit_cpu(rank, cpu_pid, cpu_tid, cpu_phase, n.template, n.instance, templates, start_ts, trace);
+            emit_cpu(context, n.template, n.instance, trace);
             for c in &n.children {
-                visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+                visit(c, context, trace);
             }
             for c in &n.slots {
-                visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+                visit(c, context, trace);
             }
         }
         Node::SameCpu(n) => {
             for inst in &n.instances {
-                emit_cpu(rank, cpu_pid, cpu_tid, cpu_phase, n.template, *inst, templates, start_ts, trace);
+                emit_cpu(context, n.template, *inst, trace);
             }
             for c in &n.children {
-                visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+                visit(c, context, trace);
             }
             for slot in &n.slots {
                 for c in slot {
-                    visit(c, rank, cpu_pid, cpu_tid, cpu_phase, templates, start_ts, trace);
+                    visit(c, context, trace);
                 }
             }
         }
         Node::Gpu(n) => {
             for (tmpl_id, inst) in n.templates.iter().zip(n.instances.iter()) {
-                emit_gpu(rank, *tmpl_id, *inst, templates, start_ts, trace);
+                emit_gpu(context, *tmpl_id, *inst, trace);
             }
         }
         Node::KernelLaunch(n) => {
             // CPU launch event is emitted by the enclosing CpuNode/SameCpuNode;
             // KernelLaunch is just a GPU pointer in the call tree.
-            emit_gpu(rank, n.gpu_template, n.gpu_instance, templates, start_ts, trace);
+            emit_gpu(context, n.gpu_template, n.gpu_instance, trace);
         }
         Node::KernelsLaunch(n) => {
             for (tmpl_id, inst) in n.gpu_templates.iter().zip(n.gpu_instances.iter()) {
-                emit_gpu(rank, *tmpl_id, *inst, templates, start_ts, trace);
+                emit_gpu(context, *tmpl_id, *inst, trace);
             }
         }
     }
 }
 
-fn emit_cpu(
-    rank: &str,
-    pid: i64,
-    tid: &str,
-    phase: Phase,
-    tmpl_id: u32,
-    instance: u32,
-    templates: &[Template],
-    start_ts: i64,
-    trace: &mut Trace,
-) {
-    let tmpl = match templates.get(tmpl_id as usize) {
+fn emit_cpu(context: &DecodeContext<'_>, tmpl_id: u32, instance: u32, trace: &mut Trace) {
+    let tmpl = match context.templates.get(tmpl_id as usize) {
         Some(Template::Cpu(t)) => t,
         _ => return,
     };
-    let event = build_cpu_event(tmpl, instance as usize, pid, tid, phase, start_ts);
-    push(trace, rank, pid, tid, phase, event);
+    let event = build_cpu_event(
+        tmpl,
+        instance as usize,
+        context.cpu_pid,
+        context.cpu_tid,
+        context.cpu_phase,
+    );
+    push(
+        trace,
+        context.rank,
+        context.cpu_pid,
+        context.cpu_tid,
+        context.cpu_phase,
+        event,
+    );
 }
 
-fn emit_gpu(
-    rank: &str,
-    tmpl_id: u32,
-    instance: u32,
-    templates: &[Template],
-    start_ts: i64,
-    trace: &mut Trace,
-) {
-    let tmpl = match templates.get(tmpl_id as usize) {
+fn emit_gpu(context: &DecodeContext<'_>, tmpl_id: u32, instance: u32, trace: &mut Trace) {
+    let tmpl = match context.templates.get(tmpl_id as usize) {
         Some(Template::Gpu(t)) => t,
         _ => return,
     };
@@ -147,11 +139,11 @@ fn emit_gpu(
     let pid = tmpl.pid.get(i).unwrap_or(0);
     let tid = tmpl.stream_tid.get(i).unwrap_or_default().to_string();
     let phase = tmpl.ph.get(i).unwrap_or(Phase::COMPLETE);
-    let event = build_gpu_event(tmpl, i, pid, &tid, phase, start_ts);
-    push(trace, rank, pid, &tid, phase, event);
+    let event = build_gpu_event(tmpl, i, pid, &tid, phase);
+    push(trace, context.rank, pid, &tid, phase, event);
 }
 
-fn build_cpu_event(tmpl: &MergeEvent, i: usize, pid: i64, tid: &str, phase: Phase, _start_ts: i64) -> Event {
+fn build_cpu_event(tmpl: &MergeEvent, i: usize, pid: i64, tid: &str, phase: Phase) -> Event {
     let nums = decode_name_nums(&tmpl.name_nums, i);
     let name = utils::restore_digits(&tmpl.name_pattern, &nums);
     // ts in CompressedTrace is already in per-rank relative form (matches the
@@ -175,11 +167,12 @@ fn build_cpu_event(tmpl: &MergeEvent, i: usize, pid: i64, tid: &str, phase: Phas
     }
 }
 
-fn build_gpu_event(tmpl: &MergeKernelEvent, i: usize, pid: i64, tid: &str, phase: Phase, _start_ts: i64) -> Event {
+fn build_gpu_event(tmpl: &MergeKernelEvent, i: usize, pid: i64, tid: &str, phase: Phase) -> Event {
     let nums = decode_name_nums(&tmpl.name_nums, i);
     let name = utils::restore_digits(&tmpl.name_pattern, &nums);
     let ts = tmpl.ts.get(i).unwrap_or(0);
     let dur = tmpl.dur.get(i);
+    let id = tmpl.id.get(i);
     let args = decode_args(&tmpl.arg_keys, &tmpl.args_columns, i);
     Event {
         name,
@@ -190,9 +183,9 @@ fn build_gpu_event(tmpl: &MergeKernelEvent, i: usize, pid: i64, tid: &str, phase
         pid,
         tid: tid.to_string(),
         args,
-        id: None,
-        bp: None,
-        s: None,
+        id,
+        bp: tmpl.bp.clone(),
+        s: tmpl.s.clone(),
     }
 }
 
@@ -218,8 +211,7 @@ fn decode_args(arg_keys: &[String], args_columns: &[ArgColumn], i: usize) -> Opt
 }
 
 fn push(trace: &mut Trace, rank: &str, pid: i64, tid: &str, phase: Phase, event: Event) {
-    use indexmap::IndexMap;
-    let rank_streams = trace.ranks.entry(rank.to_string()).or_insert_with(IndexMap::new);
+    let rank_streams = trace.ranks.entry(rank.to_string()).or_default();
     let tid_layer = rank_streams
         .entry(pid)
         .or_default()

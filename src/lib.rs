@@ -1,4 +1,5 @@
-//! `padoc` — template-based AI profiler trace compression with in-situ analysis.
+//! PADOC compresses AI profiler traces into a queryable, template-based
+//! representation.
 //!
 //! This crate is a clean Rust rewrite of the original Python implementation in
 //! `perflowai/padoc`.  It keeps the same compression / analysis semantics
@@ -7,8 +8,8 @@
 //! * **Performance** — chrome-trace ingest via `simd-json`, columnar template
 //!   storage, in-place SLP, hash-bucket dedup of similar nodes;
 //! * **Simplicity** — no class hierarchies for nodes/events, just enums;
-//! * **Extensibility** — every compressor/analysis task is a trait so the
-//!   bench harness is uniform across baselines.
+//! * **Predictable resources** — each input trace is compressed independently;
+//!   directory-level concurrency is bounded by the caller.
 //!
 //! ## Module layout
 //!
@@ -16,32 +17,25 @@
 //! * [`node`]         — call-tree nodes (CPU / SameCPU / KernelLaunch / GPU)
 //! * [`trace`]        — `Trace`, `CompressedTrace`, JSON ingest, msgpack/zstd serialisation
 //! * [`slp`]          — segmented linear predictor for ts/dur/id/name compression
-//! * [`compressor`]   — the PADOC `TemplateCompressor` and `CompressorConfig`
-//! * [`baselines`]    — `raw`, `gzip`, `scalatrace`, `tracezip`
-//! * [`analysis`]     — `AnalysisTask` trait + 4 concrete tasks
-//! * [`bench`]        — compression matrix, analysis matrix, scalability sweeps
-//! * [`synthetic`]    — parameterised synthetic trace generator
-//! * [`storage_breakdown`], [`tree_stats`] — paper-side profiling helpers
+//! * [`compressor`]   — template extraction and structural compression
+//! * [`analysis`]     — stable in-situ analysis tasks
+//! * [`synthetic`]    — deterministic traces used by examples and tests
 
 pub mod analysis;
-pub mod baselines;
-pub mod bench;
 pub mod compressor;
 pub mod event;
 pub mod node;
 pub mod slp;
-pub mod storage_breakdown;
+#[doc(hidden)]
 pub mod synthetic;
 pub mod trace;
 pub mod trace_stream;
-pub mod tree_stats;
 pub mod utils;
 pub mod verify;
 
-pub use baselines::{BaselineCompressor, CompressArtifact};
-pub use compressor::{CompressorConfig, TemplateCompressor};
+pub use compressor::{decompress, TemplateCompressor};
 pub use event::{Event, KernelEvent, MergeEvent, MergeKernelEvent, Phase};
-pub use trace::{CompressedTrace, Trace};
+pub use trace::{CompressedTrace, MetadataEvent, Trace};
 
 /// Crate-wide error type.
 #[derive(Debug, thiserror::Error)]

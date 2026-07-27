@@ -9,10 +9,9 @@
 //! * [`CompressedTrace::write_to_path`] / [`CompressedTrace::read_from_path`]
 //!   — zstd-wrapped msgpack persistence.
 
-use crate::event::{ArgValue, Event, Phase, Template};
+use crate::event::{Event, Phase, Template};
 use crate::node::Node;
 use crate::Result;
-use ahash::{AHashMap, AHashSet};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -21,17 +20,24 @@ use std::path::{Path, PathBuf};
 /// One rank's events grouped by `(pid, tid, ph)`.
 pub type StreamMap = IndexMap<i64, IndexMap<String, IndexMap<Phase, Vec<Event>>>>;
 
-/// Worker count for the multi-threaded zstd encoder used by
-/// [`CompressedTrace::to_bytes`] and [`CompressedTrace::write_to_path`].
-/// Capped at 16 to avoid wasting cores on tiny payloads where the
-/// per-thread overhead dominates.
+/// Chrome trace metadata record.
+///
+/// Metadata remains outside the event streams, but retains its original
+/// process/thread coordinates and input order for faithful reconstruction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MetadataEvent {
+    pub name: String,
+    pub pid: i64,
+    pub tid: String,
+    pub args: Option<serde_json::Value>,
+}
 
 /// Top-level container — one entry per rank.
 #[derive(Debug, Default)]
 pub struct Trace {
     pub ranks: BTreeMap<String, StreamMap>,
-    pub metadata: AHashMap<String, AHashMap<String, serde_json::Value>>,
-    pub start_timestamp: AHashMap<String, i64>,
+    pub metadata: BTreeMap<String, Vec<MetadataEvent>>,
+    pub start_timestamp: BTreeMap<String, i64>,
 }
 
 impl Trace {
@@ -47,9 +53,9 @@ impl Trace {
         self.ranks.iter().flat_map(|(rank, processes)| {
             processes.iter().flat_map(move |(pid, threads)| {
                 threads.iter().flat_map(move |(tid, phases)| {
-                    phases
-                        .iter()
-                        .map(move |(ph, events)| (rank.as_str(), *pid, tid.as_str(), *ph, events.as_slice()))
+                    phases.iter().map(move |(ph, events)| {
+                        (rank.as_str(), *pid, tid.as_str(), *ph, events.as_slice())
+                    })
                 })
             })
         })
@@ -57,7 +63,9 @@ impl Trace {
 
     /// Total event count.  O(streams) (events are cheap to count).
     pub fn event_count(&self) -> usize {
-        self.iter_streams().map(|(_, _, _, _, events)| events.len()).sum()
+        self.iter_streams()
+            .map(|(_, _, _, _, events)| events.len())
+            .sum()
     }
 
     /// Load a single chrome-trace JSON file.
@@ -77,6 +85,9 @@ impl Trace {
     /// Both paths produce identical [`Trace`] structures.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        if is_gzip_path(path) {
+            return crate::trace_stream::parse_chrome_trace_gzip(path);
+        }
         let metadata = std::fs::metadata(path)?;
         let size = metadata.len();
         // Files this small load + parse faster via simd-json's full-tree
@@ -93,7 +104,7 @@ impl Trace {
     /// fallback when the streaming path hits an unexpected JSON shape.
     pub fn from_file_full_tree(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let bytes = std::fs::read(path)?;
+        let bytes = read_trace_bytes(path)?;
         if bytes.len() > 3 * 1024 * 1024 * 1024 {
             parse_chrome_trace_bytes_serde(&bytes, path)
         } else {
@@ -126,6 +137,150 @@ impl Trace {
             self.start_timestamp.insert(rank, ts);
         }
     }
+
+    /// Write a single-rank trace as Chrome trace JSON.
+    ///
+    /// PADOC stores timestamps relative to each rank's first event. This
+    /// method restores the original timestamp origin while streaming events
+    /// to disk, so the complete JSON document is never built in memory.
+    pub fn write_chrome_json(&self, path: impl AsRef<Path>) -> Result<()> {
+        use std::io::Write;
+
+        if self.ranks.len() != 1 {
+            return Err(crate::Error::InvalidTrace(format!(
+                "Chrome JSON output requires exactly one rank, found {}",
+                self.ranks.len()
+            )));
+        }
+
+        let (rank, _) = self
+            .ranks
+            .first_key_value()
+            .ok_or_else(|| crate::Error::InvalidTrace("trace has no ranks".into()))?;
+        let start_ts = self.start_timestamp.get(rank).copied().unwrap_or(0);
+        let file = std::fs::File::create(path)?;
+        let mut writer = std::io::BufWriter::with_capacity(1 << 20, file);
+
+        writer.write_all(b"{\"distributedInfo\":{\"rank\":")?;
+        if let Ok(numeric_rank) = rank.parse::<i64>() {
+            serde_json::to_writer(&mut writer, &numeric_rank)?;
+        } else {
+            serde_json::to_writer(&mut writer, rank)?;
+        }
+        writer.write_all(b"},\"traceEvents\":[")?;
+
+        let mut first = true;
+        if let Some(metadata) = self.metadata.get(rank) {
+            for metadata_event in metadata {
+                write_json_separator(&mut writer, &mut first)?;
+                let mut event = serde_json::Map::new();
+                event.insert(
+                    "name".into(),
+                    serde_json::Value::String(metadata_event.name.clone()),
+                );
+                event.insert("ph".into(), serde_json::Value::String("M".into()));
+                event.insert(
+                    "pid".into(),
+                    serde_json::Value::Number(metadata_event.pid.into()),
+                );
+                event.insert(
+                    "tid".into(),
+                    serde_json::Value::String(metadata_event.tid.clone()),
+                );
+                if let Some(args) = &metadata_event.args {
+                    event.insert("args".into(), args.clone());
+                }
+                serde_json::to_writer(&mut writer, &event)?;
+            }
+        }
+
+        for (_, _, _, _, events) in self.iter_streams() {
+            for event in events {
+                write_json_separator(&mut writer, &mut first)?;
+                let value = chrome_event_value(event, start_ts)?;
+                serde_json::to_writer(&mut writer, &value)?;
+            }
+        }
+
+        writer.write_all(b"]}\n")?;
+        writer.flush()?;
+        Ok(())
+    }
+}
+
+fn is_gzip_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".json.gz"))
+}
+
+fn trace_source_stem(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name
+        .strip_suffix(".json.gz")
+        .or_else(|| name.strip_suffix(".json"))
+        .unwrap_or(name);
+    Some(stem.to_owned())
+}
+
+fn read_trace_bytes(path: &Path) -> Result<Vec<u8>> {
+    if !is_gzip_path(path) {
+        return Ok(std::fs::read(path)?);
+    }
+
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut decoder = flate2::read::GzDecoder::new(file);
+    let mut bytes = Vec::new();
+    decoder.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn write_json_separator(writer: &mut impl std::io::Write, first: &mut bool) -> Result<()> {
+    if *first {
+        *first = false;
+    } else {
+        writer.write_all(b",")?;
+    }
+    Ok(())
+}
+
+fn chrome_event_value(event: &Event, start_ts: i64) -> Result<serde_json::Value> {
+    let absolute_ts = event.ts.checked_add(start_ts).ok_or_else(|| {
+        crate::Error::InvalidTrace(format!(
+            "timestamp overflow while restoring {} + {}",
+            event.ts, start_ts
+        ))
+    })?;
+
+    let mut object = serde_json::Map::new();
+    object.insert("name".into(), serde_json::Value::String(event.name.clone()));
+    object.insert("ts".into(), serde_json::Value::Number(absolute_ts.into()));
+    if let Some(dur) = event.dur {
+        object.insert("dur".into(), serde_json::Value::Number(dur.into()));
+    }
+    if let Some(cat) = &event.cat {
+        object.insert("cat".into(), serde_json::Value::String(cat.clone()));
+    }
+    object.insert(
+        "ph".into(),
+        serde_json::Value::String(event.ph.as_char().to_string()),
+    );
+    object.insert("pid".into(), serde_json::Value::Number(event.pid.into()));
+    object.insert("tid".into(), serde_json::Value::String(event.tid.clone()));
+    if let Some(args) = &event.args {
+        object.insert("args".into(), serde_json::to_value(args)?);
+    }
+    if let Some(id) = event.id {
+        object.insert("id".into(), serde_json::Value::Number(id.into()));
+    }
+    if let Some(bp) = &event.bp {
+        object.insert("bp".into(), serde_json::Value::String(bp.clone()));
+    }
+    if let Some(scope) = &event.s {
+        object.insert("s".into(), serde_json::Value::String(scope.clone()));
+    }
+    Ok(serde_json::Value::Object(object))
 }
 
 /// Return every chrome-trace file under `dir`, sorted.  Used both by
@@ -157,8 +312,8 @@ pub fn list_trace_files(dir: &Path) -> Vec<PathBuf> {
 /// Parse a single chrome-trace JSON payload.  Implementation is
 /// `simd-json`-based for big files.
 fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Trace> {
-    use simd_json::OwnedValue as Value;
     use simd_json::prelude::*;
+    use simd_json::OwnedValue as Value;
 
     let root: Value = simd_json::to_owned_value(&mut bytes)?;
     let root_obj = match root {
@@ -173,23 +328,24 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
             Value::Object(o) => o.get("rank"),
             _ => None,
         })
-        .and_then(|v| v.as_i64())
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| {
-            source_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_owned)
-                .unwrap_or_else(|| "0".to_string())
-        });
+        .and_then(|v| {
+            v.as_i64()
+                .map(|rank| rank.to_string())
+                .or_else(|| v.as_str().map(str::to_owned))
+        })
+        .unwrap_or_else(|| trace_source_stem(source_path).unwrap_or_else(|| "0".to_string()));
 
     let trace_events = match root_obj.get("traceEvents") {
         Some(Value::Array(arr)) => arr,
-        _ => return Err(crate::Error::InvalidTrace("missing traceEvents array".into())),
+        _ => {
+            return Err(crate::Error::InvalidTrace(
+                "missing traceEvents array".into(),
+            ))
+        }
     };
 
     let mut streams: StreamMap = IndexMap::new();
-    let mut metadata: AHashMap<String, serde_json::Value> = AHashMap::new();
+    let mut metadata: Vec<MetadataEvent> = Vec::new();
 
     // Two-pass: first pass collects every event; we need to know the rank's
     // minimum ts so we can normalise (matches PerFlow-AI Python behaviour
@@ -202,10 +358,18 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
             _ => continue,
         };
 
-        let ph = obj.get("ph").and_then(|v| v.as_str()).map(|s| s.as_bytes()[0]).unwrap_or(b'X');
+        let ph = obj
+            .get("ph")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.as_bytes().first().copied())
+            .unwrap_or(b'X');
         let phase = Phase(ph);
 
-        let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
 
         // pid/tid can be process-label strings (e.g. "GPU 0") in some
         // chrome-trace dialects; truncate floats and tolerate strings.
@@ -217,16 +381,25 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
                     .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
             })
             .unwrap_or(0);
-        let raw_tid: String = match obj.get("tid").cloned().unwrap_or(Value::Static(simd_json::StaticNode::Null)) {
-            Value::String(s) => s.into(),
+        let raw_tid: String = match obj
+            .get("tid")
+            .cloned()
+            .unwrap_or(Value::Static(simd_json::StaticNode::Null))
+        {
+            Value::String(s) => s,
             Value::Static(simd_json::StaticNode::I64(n)) => n.to_string(),
             Value::Static(simd_json::StaticNode::U64(n)) => n.to_string(),
             _ => "0".to_string(),
         };
 
         if phase == Phase::METADATA {
-            let value = simd_to_serde(obj.get("args").cloned().unwrap_or(Value::Static(simd_json::StaticNode::Null)));
-            metadata.insert(name, value);
+            let args = obj.get("args").cloned().map(simd_to_serde);
+            metadata.push(MetadataEvent {
+                name,
+                pid,
+                tid: raw_tid,
+                args,
+            });
             continue;
         }
 
@@ -235,7 +408,11 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
         //   * else if cat == "gpu_user_annotation",                  -> tid := "stream <tid>"
         //   * else leave as-is.
         let stream_in_args = obj.get("args").and_then(|args| match args {
-            Value::Object(o) => o.get("stream").and_then(|v| v.as_i64().map(|n| n.to_string()).or_else(|| v.as_str().map(str::to_owned))),
+            Value::Object(o) => o.get("stream").and_then(|v| {
+                v.as_i64()
+                    .map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(str::to_owned))
+            }),
             _ => None,
         });
         let cat = obj.get("cat").and_then(|v| v.as_str()).map(str::to_owned);
@@ -249,7 +426,12 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
         };
 
         let event = build_event(obj, name, pid, tid.clone(), phase);
-        staging.push(StagingEvent { event, pid, tid, phase });
+        staging.push(StagingEvent {
+            event,
+            pid,
+            tid,
+            phase,
+        });
     }
 
     // Per-rank ts origin: subtract the minimum ts so the column is small.
@@ -271,9 +453,7 @@ fn parse_chrome_trace_bytes(mut bytes: Vec<u8>, source_path: &Path) -> Result<Tr
     let mut trace = Trace::empty();
     trace.ranks.insert(rank.clone(), streams);
     trace.start_timestamp.insert(rank.clone(), start_ts);
-    let mut rank_meta: AHashMap<String, serde_json::Value> = AHashMap::new();
-    rank_meta.extend(metadata);
-    trace.metadata.insert(rank, rank_meta);
+    trace.metadata.insert(rank, metadata);
     Ok(trace)
 }
 
@@ -291,8 +471,8 @@ fn build_event(
     tid: String,
     phase: Phase,
 ) -> Event {
-    use simd_json::OwnedValue as Value;
     use simd_json::prelude::*;
+    use simd_json::OwnedValue as Value;
     // simd-json's `.as_i64()` returns None for f64 numbers; chrome-traces
     // emitted by Kineto+ROCm write `ts`/`dur` as floats.  Falling through
     // to `unwrap_or(0)` would silently zero out every such event's
@@ -353,15 +533,12 @@ fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Tr
         .get("distributedInfo")
         .and_then(|v| v.as_object())
         .and_then(|o| o.get("rank"))
-        .and_then(|v| v.as_i64())
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| {
-            source_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_owned)
-                .unwrap_or_else(|| "0".to_string())
-        });
+        .and_then(|v| {
+            v.as_i64()
+                .map(|rank| rank.to_string())
+                .or_else(|| v.as_str().map(str::to_owned))
+        })
+        .unwrap_or_else(|| trace_source_stem(source_path).unwrap_or_else(|| "0".to_string()));
 
     let trace_events = root_obj
         .get("traceEvents")
@@ -369,7 +546,7 @@ fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Tr
         .ok_or_else(|| crate::Error::InvalidTrace("missing traceEvents array".into()))?;
 
     let mut streams: StreamMap = IndexMap::new();
-    let mut metadata: AHashMap<String, serde_json::Value> = AHashMap::new();
+    let mut metadata: Vec<MetadataEvent> = Vec::new();
     let mut staging: Vec<StagingEvent> = Vec::with_capacity(trace_events.len());
 
     for raw in trace_events {
@@ -378,7 +555,11 @@ fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Tr
             None => continue,
         };
 
-        let ph = obj.get("ph").and_then(|v| v.as_str()).map(|s| s.as_bytes()[0]).unwrap_or(b'X');
+        let ph = obj
+            .get("ph")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.as_bytes().first().copied())
+            .unwrap_or(b'X');
         let phase = Phase(ph);
         let name = obj
             .get("name")
@@ -393,18 +574,25 @@ fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Tr
         };
 
         if phase == Phase::METADATA {
-            let value = obj.get("args").cloned().unwrap_or(Value::Null);
-            metadata.insert(name, value);
+            metadata.push(MetadataEvent {
+                name,
+                pid,
+                tid: raw_tid,
+                args: obj.get("args").cloned(),
+            });
             continue;
         }
 
-        let stream_in_args = obj.get("args").and_then(|args| args.as_object()).and_then(|a| {
-            a.get("stream").and_then(|v| {
-                v.as_i64()
-                    .map(|n| n.to_string())
-                    .or_else(|| v.as_str().map(str::to_owned))
-            })
-        });
+        let stream_in_args = obj
+            .get("args")
+            .and_then(|args| args.as_object())
+            .and_then(|a| {
+                a.get("stream").and_then(|v| {
+                    v.as_i64()
+                        .map(|n| n.to_string())
+                        .or_else(|| v.as_str().map(str::to_owned))
+                })
+            });
         let cat = obj.get("cat").and_then(|v| v.as_str()).map(str::to_owned);
 
         let tid = if let Some(stream) = stream_in_args {
@@ -416,7 +604,12 @@ fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Tr
         };
 
         let event = build_event_serde(obj, name, pid, tid.clone(), phase);
-        staging.push(StagingEvent { event, pid, tid, phase });
+        staging.push(StagingEvent {
+            event,
+            pid,
+            tid,
+            phase,
+        });
     }
 
     let start_ts = staging.iter().map(|s| s.event.ts).min().unwrap_or(0);
@@ -437,9 +630,7 @@ fn parse_chrome_trace_bytes_serde(bytes: &[u8], source_path: &Path) -> Result<Tr
     let mut trace = Trace::empty();
     trace.ranks.insert(rank.clone(), streams);
     trace.start_timestamp.insert(rank.clone(), start_ts);
-    let mut rank_meta: AHashMap<String, serde_json::Value> = AHashMap::new();
-    rank_meta.extend(metadata);
-    trace.metadata.insert(rank, rank_meta);
+    trace.metadata.insert(rank, metadata);
     Ok(trace)
 }
 
@@ -469,7 +660,19 @@ fn build_event_serde(
         _ => None,
     });
 
-    Event { name, ts, dur, cat, ph: phase, pid, tid, args, id, bp, s }
+    Event {
+        name,
+        ts,
+        dur,
+        cat,
+        ph: phase,
+        pid,
+        tid,
+        args,
+        id,
+        bp,
+        s,
+    }
 }
 
 fn simd_to_serde(v: simd_json::OwnedValue) -> serde_json::Value {
@@ -484,7 +687,7 @@ fn simd_to_serde(v: simd_json::OwnedValue) -> serde_json::Value {
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null),
         },
-        V::String(s) => serde_json::Value::String(s.into()),
+        V::String(s) => serde_json::Value::String(s),
         V::Array(arr) => serde_json::Value::Array(arr.into_iter().map(simd_to_serde).collect()),
         V::Object(obj) => {
             let unboxed = *obj;
@@ -504,90 +707,88 @@ fn simd_to_serde(v: simd_json::OwnedValue) -> serde_json::Value {
 /// Output of `TemplateCompressor`.  Self-contained: can be serialised to
 /// disk via [`CompressedTrace::write_to_path`] and reloaded for in-situ
 /// analysis or full decompression.
+pub type CompressedRankMap = BTreeMap<String, BTreeMap<i64, BTreeMap<String, BTreeMap<u8, Node>>>>;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CompressedTrace {
     pub templates: Vec<Template>,
     /// `rank -> pid -> tid -> ph -> root_node`
-    pub ranks: BTreeMap<String, BTreeMap<i64, BTreeMap<String, BTreeMap<u8, Node>>>>,
-    pub metadata: AHashMap<String, AHashMap<String, serde_json::Value>>,
-    pub start_timestamp: AHashMap<String, i64>,
+    pub ranks: CompressedRankMap,
+    pub metadata: BTreeMap<String, Vec<MetadataEvent>>,
+    pub start_timestamp: BTreeMap<String, i64>,
 }
 
+/// Current on-disk PADOC artifact format.
+pub const ARTIFACT_FORMAT_VERSION: u16 = 1;
+const ARTIFACT_MAGIC: &[u8; 8] = b"PADOCART";
+const ARTIFACT_CODEC_ZSTD: u8 = 1;
+const ARTIFACT_HEADER_LEN: usize = 16;
+
 impl CompressedTrace {
-    /// Persist to disk: msgpack-encoded then zstd-compressed.
+    /// Persist a versioned PADOC artifact without overwriting an existing file.
     ///
     /// Streaming pipeline: msgpack chunks flow directly into a zstd
     /// encoder wrapped around a buffered file writer, so neither the raw
     /// msgpack output (~10 GiB on a 1024-rank profiler trace) nor the
     /// compressed blob (~2.4 GiB) is ever fully buffered in memory.
     ///
-    /// Single-threaded zstd by design — see [`Self::to_bytes`] for the
-    /// rationale.  Use [`Self::write_to_path_mt`] when you have a multi-GB
-    /// payload and have measured the multithread overhead to be worthwhile.
     pub fn write_to_path(&self, path: impl AsRef<Path>, zstd_level: i32) -> Result<()> {
-        self.write_to_path_inner(path, zstd_level, 0)
-    }
-
-    /// Like [`Self::write_to_path`] but with multi-threaded zstd.
-    /// `n_workers = 0` disables threading; non-zero spins up that many
-    /// zstd worker threads on top of the encoder.
-    pub fn write_to_path_mt(
-        &self,
-        path: impl AsRef<Path>,
-        zstd_level: i32,
-        n_workers: u32,
-    ) -> Result<()> {
-        self.write_to_path_inner(path, zstd_level, n_workers)
-    }
-
-    fn write_to_path_inner(
-        &self,
-        path: impl AsRef<Path>,
-        zstd_level: i32,
-        n_workers: u32,
-    ) -> Result<()> {
-        let path = path.as_ref();
-        let file = std::io::BufWriter::with_capacity(8 * 1024 * 1024, std::fs::File::create(path)?);
-        let encoder = zstd::stream::Encoder::new(file, zstd_level)?;
-        // 1 MiB BufWriter wrapping the zstd Encoder coalesces rmp_serde's
-        // per-field writes (which are tiny — see `serialize_bench` example)
-        // into chunks large enough that zstd's per-write overhead becomes
-        // negligible.  Without this, qwen3 serialize is 17 s; with this,
-        // 5.6 s.  The same trick is applied in `to_bytes`.
-        let mut buf_enc = std::io::BufWriter::with_capacity(1 << 20, encoder);
-        if n_workers > 0 {
-            let _ = buf_enc.get_mut().multithread(n_workers);
-        }
-        rmp_serde::encode::write_named(&mut buf_enc, self)?;
         use std::io::Write;
-        buf_enc.flush()?;
-        let encoder = buf_enc
+
+        let path = path.as_ref();
+        if path.exists() {
+            return Err(crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("refusing to overwrite {}", path.display()),
+            )));
+        }
+
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let temp = tempfile::NamedTempFile::new_in(parent)?;
+        let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, temp);
+        write_artifact_header(&mut writer)?;
+        let encoder = zstd::stream::Encoder::new(writer, zstd_level)?;
+        let mut buffered_encoder = std::io::BufWriter::with_capacity(1 << 20, encoder);
+        rmp_serde::encode::write_named(&mut buffered_encoder, self)?;
+        buffered_encoder.flush()?;
+        let encoder = buffered_encoder
             .into_inner()
-            .map_err(|e| crate::Error::Other(format!("flush BufWriter: {}", e.error())))?;
+            .map_err(|e| crate::Error::Other(format!("flush artifact encoder: {}", e.error())))?;
         let mut writer = encoder.finish()?;
         writer.flush()?;
+        let temp = writer
+            .into_inner()
+            .map_err(|e| crate::Error::Other(format!("flush artifact file: {}", e.error())))?;
+        temp.as_file().sync_all()?;
+        temp.persist_noclobber(path)
+            .map_err(|error| crate::Error::Io(error.error))?;
         Ok(())
     }
 
-    /// Read back what `write_to_path` produced.
+    /// Read a PADOC artifact with bounded I/O buffering.
     pub fn read_from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let bytes = std::fs::read(path)?;
-        Self::from_bytes(&bytes)
+        let file = std::fs::File::open(path)?;
+        let mut reader = std::io::BufReader::with_capacity(8 * 1024 * 1024, file);
+        read_artifact_header(&mut reader)?;
+        let decoder = zstd::stream::read::Decoder::new(reader)?;
+        Ok(rmp_serde::from_read(decoder)?)
     }
 
-    /// Encode to a self-contained byte blob (zstd-wrapped msgpack).
+    /// Encode to a self-contained, versioned artifact byte blob.
     ///
     /// Streams msgpack output straight into a single-threaded zstd encoder
     /// — the full uncompressed msgpack payload is never materialised, only
     /// the final compressed buffer.
     ///
-    /// We tried `encoder.multithread(N)` here and it regressed serialize time
-    /// 2-4× on every dataset we measured (lewm, qwen3, unifolm) because the
-    /// per-job coordination cost of zstdmt outweighed any parallelism gain
-    /// at our chunk sizes (~MiB-scale msgpack writes from rmp_serde).  Keep
-    /// it single-threaded; multi-threading is opt-in via [`write_to_path_mt`].
+    /// The payload encoder is intentionally single-threaded. Directory-level
+    /// parallelism processes independent trace files instead of adding a
+    /// second, nested source of concurrency here.
     pub fn to_bytes(&self, zstd_level: i32) -> Result<Vec<u8>> {
-        let out: Vec<u8> = Vec::with_capacity(8 * 1024 * 1024);
+        let mut out: Vec<u8> = Vec::with_capacity(8 * 1024 * 1024);
+        write_artifact_header(&mut out)?;
         let encoder = zstd::stream::Encoder::new(out, zstd_level)?;
         let mut buf_enc = std::io::BufWriter::with_capacity(1 << 20, encoder);
         rmp_serde::encode::write_named(&mut buf_enc, self)?;
@@ -601,22 +802,46 @@ impl CompressedTrace {
 
     /// Decode the byte blob produced by [`Self::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let raw = zstd::stream::decode_all(bytes)?;
-        let trace: CompressedTrace = rmp_serde::from_slice(&raw)?;
-        Ok(trace)
+        let mut cursor = std::io::Cursor::new(bytes);
+        read_artifact_header(&mut cursor)?;
+        let decoder = zstd::stream::read::Decoder::new(cursor)?;
+        Ok(rmp_serde::from_read(decoder)?)
     }
 }
 
-// Used by metadata, args, etc. — guarantees deterministic key ordering for ranks.
-#[allow(dead_code)]
-fn ordered_keys(m: &AHashMap<String, AHashMap<String, ArgValue>>) -> Vec<String> {
-    let mut keys: AHashSet<&str> = AHashSet::new();
-    for (_, sub) in m {
-        for k in sub.keys() {
-            keys.insert(k);
-        }
+fn write_artifact_header(writer: &mut impl std::io::Write) -> Result<()> {
+    let mut header = [0_u8; ARTIFACT_HEADER_LEN];
+    header[..8].copy_from_slice(ARTIFACT_MAGIC);
+    header[8..10].copy_from_slice(&ARTIFACT_FORMAT_VERSION.to_le_bytes());
+    header[10] = ARTIFACT_CODEC_ZSTD;
+    writer.write_all(&header)?;
+    Ok(())
+}
+
+fn read_artifact_header(reader: &mut impl std::io::Read) -> Result<()> {
+    let mut header = [0_u8; ARTIFACT_HEADER_LEN];
+    reader.read_exact(&mut header)?;
+    if &header[..8] != ARTIFACT_MAGIC {
+        return Err(crate::Error::InvalidCompressed(
+            "invalid PADOC artifact magic".into(),
+        ));
     }
-    let mut out: Vec<String> = keys.into_iter().map(str::to_owned).collect();
-    out.sort();
-    out
+    let version = u16::from_le_bytes([header[8], header[9]]);
+    if version != ARTIFACT_FORMAT_VERSION {
+        return Err(crate::Error::InvalidCompressed(format!(
+            "unsupported artifact format version {version}; expected {ARTIFACT_FORMAT_VERSION}"
+        )));
+    }
+    if header[10] != ARTIFACT_CODEC_ZSTD {
+        return Err(crate::Error::InvalidCompressed(format!(
+            "unsupported artifact codec {}",
+            header[10]
+        )));
+    }
+    if header[11..].iter().any(|byte| *byte != 0) {
+        return Err(crate::Error::InvalidCompressed(
+            "artifact header uses unsupported flags".into(),
+        ));
+    }
+    Ok(())
 }

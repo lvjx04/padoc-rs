@@ -47,7 +47,11 @@ impl SlpColumn {
             let start = values[i];
             // Single-element segment as default.
             if i + 1 == values.len() {
-                segments.push(LinearSegment { start, step: 0, length: 1 });
+                segments.push(LinearSegment {
+                    start,
+                    step: 0,
+                    length: 1,
+                });
                 break;
             }
             let step = values[i + 1].wrapping_sub(start);
@@ -62,7 +66,11 @@ impl SlpColumn {
                     break;
                 }
             }
-            segments.push(LinearSegment { start, step, length });
+            segments.push(LinearSegment {
+                start,
+                step,
+                length,
+            });
             i += length as usize;
         }
         SlpColumn { segments }
@@ -123,13 +131,17 @@ pub fn compress_name_nums(rows: &NameNums) -> NameNums {
     if width == 0 {
         return NameNums::Empty;
     }
-    let mut string_columns: Vec<Vec<String>> = (0..width).map(|_| Vec::with_capacity(rows.len())).collect();
+    let mut string_columns: Vec<Vec<String>> =
+        (0..width).map(|_| Vec::with_capacity(rows.len())).collect();
     for row in rows {
         for (i, v) in row.iter().enumerate().take(width) {
             string_columns[i].push(v.clone());
         }
     }
-    let columns: Vec<DigitColumn> = string_columns.into_iter().map(compact_digit_column).collect();
+    let columns: Vec<DigitColumn> = string_columns
+        .into_iter()
+        .map(compact_digit_column)
+        .collect();
     NameNums::Columnar(columns)
 }
 
@@ -188,9 +200,7 @@ fn compact_digit_column(values: Vec<String>) -> DigitColumn {
         // - widths differ but no entry has a leading zero => width=0 (plain
         //   decimal) — `format_int_with_width(0)` re-emits without padding.
         let uniform_width = min_len == max_len;
-        let any_padding = values
-            .iter()
-            .any(|v| v.starts_with('0') && v.len() > 1);
+        let any_padding = values.iter().any(|v| v.starts_with('0') && v.len() > 1);
         let width: u8 = if uniform_width && any_padding {
             max_len.min(255) as u8
         } else if !any_padding {
@@ -204,13 +214,19 @@ fn compact_digit_column(values: Vec<String>) -> DigitColumn {
                 .iter()
                 .map(|v| v.parse::<i32>().unwrap_or(0))
                 .collect();
-            return DigitColumn::I32 { width, values: ints };
+            return DigitColumn::I32 {
+                width,
+                values: ints,
+            };
         } else if min_v >= i64::MIN as i128 && max_v <= i64::MAX as i128 {
             let ints: Vec<i64> = values
                 .iter()
                 .map(|v| v.parse::<i64>().unwrap_or(0))
                 .collect();
-            return DigitColumn::I64 { width, values: ints };
+            return DigitColumn::I64 {
+                width,
+                values: ints,
+            };
         }
     }
 

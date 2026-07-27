@@ -28,6 +28,7 @@ pub struct VerifyReport {
     pub missing_streams: Vec<String>,
     pub extra_streams: Vec<String>,
     pub first_mismatches: Vec<String>,
+    pub metadata_mismatches: Vec<String>,
     /// Streams whose event counts don't match — useful to spot where events
     /// went missing during round-trip.
     pub stream_count_diffs: Vec<String>,
@@ -38,6 +39,7 @@ impl VerifyReport {
         self.mismatched_events == 0
             && self.missing_streams.is_empty()
             && self.extra_streams.is_empty()
+            && self.metadata_mismatches.is_empty()
             && self.original_event_count == self.reconstructed_event_count
     }
 }
@@ -45,9 +47,11 @@ impl VerifyReport {
 /// Compare two traces.  `original` is the raw chrome-trace; `reconstructed`
 /// is what comes back out of `padoc::decompress(...)`.
 pub fn compare_traces(original: &Trace, reconstructed: &Trace) -> VerifyReport {
-    let mut report = VerifyReport::default();
-    report.original_event_count = original.event_count();
-    report.reconstructed_event_count = reconstructed.event_count();
+    let mut report = VerifyReport {
+        original_event_count: original.event_count(),
+        reconstructed_event_count: reconstructed.event_count(),
+        ..VerifyReport::default()
+    };
 
     let orig_streams = collect_streams(original);
     let recon_streams = collect_streams(reconstructed);
@@ -69,11 +73,25 @@ pub fn compare_traces(original: &Trace, reconstructed: &Trace) -> VerifyReport {
             None => continue,
         };
         if orig_events.len() != recon_events.len() && report.stream_count_diffs.len() < 10 {
-            report
-                .stream_count_diffs
-                .push(format!("{} : orig={} recon={}", key, orig_events.len(), recon_events.len()));
+            report.stream_count_diffs.push(format!(
+                "{} : orig={} recon={}",
+                key,
+                orig_events.len(),
+                recon_events.len()
+            ));
         }
         compare_stream(key, orig_events, recon_events, &mut report);
+    }
+
+    for rank in original
+        .metadata
+        .keys()
+        .chain(reconstructed.metadata.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        if original.metadata.get(rank) != reconstructed.metadata.get(rank) {
+            report.metadata_mismatches.push(rank.clone());
+        }
     }
     report
 }
@@ -113,8 +131,12 @@ fn compare_stream(key: &str, orig: &[Event], recon: &[Event], report: &mut Verif
     // disagree is reported as a mismatch.  `matching_events` is the size of
     // the multiset intersection.
     let mut keys: AHashMap<&String, ()> = AHashMap::new();
-    for k in orig_counts.keys() { keys.insert(k, ()); }
-    for k in recon_counts.keys() { keys.insert(k, ()); }
+    for k in orig_counts.keys() {
+        keys.insert(k, ());
+    }
+    for k in recon_counts.keys() {
+        keys.insert(k, ());
+    }
 
     for fp in keys.keys() {
         let oc = orig_counts.get(*fp).copied().unwrap_or(0);
@@ -174,4 +196,3 @@ fn event_fingerprint(e: &Event) -> String {
     }
     s
 }
-

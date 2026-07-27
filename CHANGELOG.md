@@ -2,7 +2,9 @@
 
 All notable user-facing changes will be documented here.
 
-## Unreleased
+## [Unreleased]
+
+## [0.1.0] - 2026-07-28
 
 ### Added
 
@@ -27,3 +29,6 @@ All notable user-facing changes will be documented here.
   interfaces. The experimental Rust API remains pre-1.0 and may evolve.
 - Keep stable encoding flat and per-rank, without recursive call trees or
   cross-rank template merging.
+
+[Unreleased]: https://github.com/lvjx04/padoc-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/lvjx04/padoc-rs/releases/tag/v0.1.0

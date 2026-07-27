@@ -1,9 +1,11 @@
-//! PADOC compresses AI profiler traces into a queryable, template-based
-//! representation.
+//! PADOC compresses Chrome trace JSON into a queryable, template-based
+//! representation with lossless supported-event reconstruction.
 //!
-//! This crate is a clean Rust rewrite of the original Python implementation in
-//! `perflowai/padoc`.  It keeps the same compression / analysis semantics
-//! (same paper, same evaluation methodology) but with these design goals:
+//! The `padoc` command-line interface and versioned artifact behavior are the
+//! primary supported interfaces. This Rust library is available for
+//! experimentation, but its API is pre-1.0 and may evolve between releases.
+//!
+//! The implementation has these design goals:
 //!
 //! * **Performance** — streaming chrome-trace ingest and columnar template
 //!   storage with flat per-stream references;
@@ -11,15 +13,9 @@
 //! * **Predictable resources** — each input trace is compressed independently;
 //!   directory-level concurrency is bounded by the caller.
 //!
-//! ## Module layout
-//!
-//! * [`event`]        — `Event`, `MergeEvent`, `KernelEvent` and friends
-//! * [`node`]         — flat v2 stream references and legacy v1 node decoding
-//! * [`trace`]        — `Trace`, `CompressedTrace`, JSON ingest, msgpack/zstd serialisation
-//! * [`slp`]          — segmented linear predictor for ts/dur/id/name compression
-//! * [`compressor`]   — template extraction and bounded-depth stream encoding
-//! * [`analysis`]     — stable in-situ analysis tasks
-//! * [`synthetic`]    — deterministic traces used by examples and tests
+//! The root re-exports the main experimental entry points. Implementation
+//! modules remain visible where existing data types require them, but they are
+//! not a stable API commitment before 1.0.
 
 pub mod analysis;
 pub mod compressor;
@@ -29,8 +25,8 @@ pub mod slp;
 #[doc(hidden)]
 pub mod synthetic;
 pub mod trace;
-pub mod trace_stream;
-pub mod utils;
+mod trace_stream;
+mod utils;
 pub mod verify;
 
 pub use compressor::{decompress, TemplateCompressor};

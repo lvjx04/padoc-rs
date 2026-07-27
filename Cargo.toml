@@ -7,6 +7,8 @@ license = "Apache-2.0"
 authors = ["fighting <2108244896@qq.com>"]
 repository = "https://github.com/lvjx04/padoc-rs"
 readme = "README.md"
+keywords = ["profiler", "chrome-trace", "compression", "observability", "ai"]
+categories = ["command-line-utilities", "compression", "development-tools::profiling"]
 
 [lib]
 name = "padoc"

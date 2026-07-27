@@ -43,12 +43,12 @@ use crate::Result;
 /// thrashes between buffer refills on a typical trace.
 const BUFFER_SIZE: usize = 8 * 1024 * 1024;
 
-pub fn parse_chrome_trace_stream(path: &Path) -> Result<Trace> {
+pub(crate) fn parse_chrome_trace_stream(path: &Path) -> Result<Trace> {
     let file = File::open(path)?;
     parse_chrome_trace_reader(file, path)
 }
 
-pub fn parse_chrome_trace_gzip(path: &Path) -> Result<Trace> {
+pub(crate) fn parse_chrome_trace_gzip(path: &Path) -> Result<Trace> {
     let file = File::open(path)?;
     parse_chrome_trace_reader(flate2::read::GzDecoder::new(file), path)
 }

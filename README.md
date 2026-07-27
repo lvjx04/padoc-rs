@@ -1,17 +1,16 @@
 # PADOC
 
-PADOC is a Rust tool for compressing large AI profiler traces into a compact,
-queryable representation. It accepts Chrome trace JSON produced by tools such
-as PyTorch Profiler and supports analysis without first rebuilding every raw
-event.
+PADOC is a CLI for turning large AI-profiler Chrome trace JSON files into
+compact, independently usable artifacts. It reconstructs supported events
+losslessly and runs a small set of analyses without first rebuilding raw JSON.
 
-The public implementation favors predictable resource use and lossless event
-reconstruction. Each input file is compressed independently; PADOC does not
-perform cross-rank template merging.
+The CLI and versioned artifact behavior are PADOC's primary supported
+interfaces. The Rust library is available for experimentation, but its API is
+pre-1.0 and may evolve.
 
 ## Install
 
-PADOC currently builds from source with the stable Rust toolchain:
+Build a checkout with the stable Rust toolchain:
 
 ```bash
 git clone https://github.com/lvjx04/padoc-rs.git
@@ -19,87 +18,87 @@ cd padoc-rs
 cargo build --release
 ```
 
-The binary is written to `target/release/padoc`.
+Or install the current repository version directly:
 
-## Quick start
+```bash
+cargo install --git https://github.com/lvjx04/padoc-rs
+```
 
-Compress one trace:
+## Basic workflow
 
 ```bash
 padoc compress trace.json --output trace.padoc
-```
-
-Inspect and verify it:
-
-```bash
 padoc inspect trace.padoc
 padoc verify trace.json --artifact trace.padoc
-```
-
-Reconstruct Chrome trace JSON:
-
-```bash
 padoc decompress trace.padoc --output restored.json
 ```
 
-For a directory of per-rank trace files, PADOC creates one artifact per input
-and a small manifest:
+`inspect` prints JSON metadata, including the format version read from the
+artifact header. `verify` compares all supported fields as event multisets.
+
+Compress a directory of per-rank traces into one artifact per input plus a
+manifest:
 
 ```bash
 padoc compress-dir ./traces --output ./artifacts --workers 4
 ```
 
-`--workers` bounds file-level concurrency. It does not merge ranks or create
-additional compression threads inside an artifact.
+`--workers` is the maximum number of files processed concurrently. PADOC does
+not merge ranks or add nested compression workers within an artifact.
 
 ## In-situ analysis
 
-List the available tasks:
+The stable task set is deliberately small:
+
+- `operator_hotspot`: top CPU operators by total duration
+- `stream_load_balance`: busy-time distribution across GPU streams
 
 ```bash
 padoc list
-```
-
-Run a task directly on an artifact:
-
-```bash
 padoc analyze trace.padoc --task operator_hotspot
-padoc analyze trace.padoc --task stream_load_balance
 ```
 
-The initial public task set is intentionally small. Tasks that rely on
-workload-specific naming or incomplete CPU-GPU attribution remain on the
-research branch until their semantics are stable.
+## Supported data and artifacts
 
-## Supported data
+PADOC accepts Chrome trace JSON and gzip-compressed `.json.gz` inputs with a
+`traceEvents` array. It preserves the supported event fields, nested JSON
+arguments, optional identifiers, and metadata records. Timestamps are
+normalized internally and restored during reconstruction.
 
-PADOC currently supports Chrome trace JSON and gzip-compressed `.json.gz`
-objects with a `traceEvents` array. It preserves the event fields used by AI
-profilers:
+Artifacts have a validated header containing their format version and codec.
+The current writer emits v2; the reader accepts supported legacy versions and
+rejects unknown versions, codecs, and flags.
 
-- `name`, `ts`, `dur`, `cat`, `ph`, `pid`, and `tid`
-- `args`, including nested JSON values
-- optional `id`, `bp`, and `s`
-- metadata names, process/thread coordinates, argument payloads, duplicates,
-  and input order
+## Verified results
 
-Timestamps are normalized internally and restored during JSON reconstruction.
-Event ordering may differ after decompression, but the supported event fields
-are verified as a multiset.
+These full-input results use artifact format v2:
 
-The artifact format is versioned but is still pre-1.0. Compatibility guarantees
-will begin with the first stable release.
+| Dataset | Ranks | Events | Input bytes | PADOC bytes | Size/input | Compression | Wall time | Peak RSS (KiB) | Lossless |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| LeWorldModel | 2 | 3,469,389 | 927,329,976 | 38,333,493 | 4.1337% | 24.191x | 8.37s | 3,564,180 | 2/2 |
+| Qwen3 | 256 | 33,813,574 | 7,422,237,193 | 310,439,485 | 4.1826% | 23.909x | 14.66s | 5,663,212 | 256/256 |
+| UnifoLM world model | 4 | 80,223,071 | 24,087,743,045 | 774,296,478 | 3.2145% | 31.109x | 3m27.17s | 54,514,728 | 4/4 |
+| LLaMA profiler | 1,024 | 301,288,116 | 75,106,905,369 | 2,732,778,989 | 3.6385% | 27.484x | 1m22.07s | 6,807,336 | 1,024/1,024 |
 
-## Design
+The results were produced from commit
+`a439ad9e86c14c05a096c23aab893de951e9ec4f`. Compression is CPU-side and used
+ordinary Chrome trace JSON inputs. Every row was verified exhaustively with
+event-multiset comparison; no sampling was used.
 
-PADOC groups events by stable signatures, stores per-instance values in typed
-columns, and records flat template/instance references per stream. Large JSON
-files are parsed as a stream, and artifact payloads are serialized directly
-through zstd without materializing an intermediate MessagePack buffer. The
-stable encoder deliberately avoids recursive call trees and cross-rank merging.
+## Resource behavior and limitations
 
-See [docs/design.md](docs/design.md) and [docs/artifact-format.md](docs/artifact-format.md)
-for the current engineering contract.
+- PADOC does not perform cross-rank merging.
+- Reconstructed event order and JSON formatting may differ from the input;
+  supported event content is lossless.
+- One active file is retained as decoded and compressed structures, so memory
+  is proportional to the largest active trace.
+- `--workers` bounds concurrent files, not memory independently of file size.
+- Full verification currently materializes overlapping original,
+  reconstructed, and comparison representations. On two verified 4.27–4.28 GB
+  deeply nested traces, verification peaked at about 56.1–56.2 GiB.
+
+See [the design](docs/design.md) and
+[artifact format](docs/artifact-format.md) for the engineering contracts.
 
 ## Development
 
@@ -107,6 +106,8 @@ for the current engineering contract.
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+cargo package --offline
 ```
 
 Research baselines and experiment drivers are maintained separately on the

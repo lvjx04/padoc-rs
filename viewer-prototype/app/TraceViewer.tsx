@@ -32,6 +32,7 @@ type GpuEvent = {
   duration: number;
   lane: number;
   kind: "kernel" | "collective" | "memory";
+  detail: string;
 };
 
 const trees: TreeSummary[] = [
@@ -133,16 +134,16 @@ const eventTemplate: Omit<TraceEvent, "id">[] = [
 ];
 
 const gpuTemplate: Omit<GpuEvent, "id">[] = [
-  { name: "embedding_kernel", start: 4.9, duration: 3.8, lane: 0, kind: "kernel" },
-  { name: "cublasGemmEx", start: 12.1, duration: 3.4, lane: 0, kind: "kernel" },
-  { name: "flash_fwd", start: 16.8, duration: 6.2, lane: 1, kind: "kernel" },
-  { name: "silu_mul", start: 26.4, duration: 2.9, lane: 0, kind: "kernel" },
-  { name: "cublasLtMatmul", start: 29.7, duration: 6.9, lane: 0, kind: "kernel" },
-  { name: "all_reduce", start: 59.4, duration: 6.1, lane: 2, kind: "collective" },
-  { name: "flash_bwd", start: 67.6, duration: 10.8, lane: 1, kind: "kernel" },
-  { name: "reduce_scatter", start: 79.7, duration: 5.1, lane: 2, kind: "collective" },
-  { name: "multi_tensor_adam", start: 89.6, duration: 5.8, lane: 0, kind: "kernel" },
-  { name: "D2D memcpy", start: 95.8, duration: 1.6, lane: 1, kind: "memory" },
+  { name: "embedding_kernel", start: 4.9, duration: 3.8, lane: 0, kind: "kernel", detail: "Embedding lookup dispatched from aten::embedding" },
+  { name: "cublasGemmEx", start: 12.1, duration: 3.4, lane: 0, kind: "kernel", detail: "QKV projection matrix multiplication" },
+  { name: "flash_fwd", start: 16.8, duration: 6.2, lane: 1, kind: "kernel", detail: "Fused FlashAttention forward kernel" },
+  { name: "silu_mul", start: 26.4, duration: 2.9, lane: 0, kind: "kernel", detail: "Fused SiLU gate and elementwise multiply" },
+  { name: "cublasLtMatmul", start: 29.7, duration: 6.9, lane: 0, kind: "kernel", detail: "Tensor Core MLP projection" },
+  { name: "all_reduce", start: 59.4, duration: 6.1, lane: 2, kind: "collective", detail: "NCCL gradient synchronization across ranks" },
+  { name: "flash_bwd", start: 67.6, duration: 10.8, lane: 1, kind: "kernel", detail: "Fused FlashAttention backward kernel" },
+  { name: "reduce_scatter", start: 79.7, duration: 5.1, lane: 2, kind: "collective", detail: "NCCL reduce-scatter for sharded gradients" },
+  { name: "multi_tensor_adam", start: 89.6, duration: 5.8, lane: 0, kind: "kernel", detail: "Fused AdamW optimizer update" },
+  { name: "D2D memcpy", start: 95.8, duration: 1.6, lane: 1, kind: "memory", detail: "Device-to-device parameter copy" },
 ];
 
 const laneNames = ["root", "framework", "module", "operator", "collective", "kernel"];
@@ -178,8 +179,10 @@ export default function TraceViewer() {
   const tree = trees[selectedTree];
   const events = useMemo(() => buildEvents(selectedTree), [selectedTree]);
   const gpuEvents = useMemo(() => buildGpuEvents(selectedTree), [selectedTree]);
-  const selectedEvent =
-    events.find((event) => event.id === selectedEventId) ?? events[0];
+  const selectedCpuEvent = events.find((event) => event.id === selectedEventId);
+  const selectedGpuEvent = gpuEvents.find((event) => event.id === selectedEventId);
+  const selectedEvent = selectedCpuEvent ?? selectedGpuEvent ?? events[0];
+  const selectedSource = selectedGpuEvent ? "GPU" : "CPU";
 
   const focusTree = (index: number) => {
     setSelectedTree(index);
@@ -345,7 +348,7 @@ export default function TraceViewer() {
                       <button
                         type="button"
                         key={event.id}
-                        className={`trace-event ${event.kind} ${selectedEvent.id === event.id ? "is-active" : ""}`}
+                        className={`trace-event ${event.kind} ${selectedEventId === event.id ? "is-active" : ""}`}
                         style={{ left: eventLeft(event.start), width: eventWidth(event.duration) }}
                         onClick={() => setSelectedEventId(event.id)}
                         title={`${event.name} · ${(event.duration / 100 * tree.duration).toFixed(2)} ms`}
@@ -364,14 +367,16 @@ export default function TraceViewer() {
                   {gpuLaneNames.map((_, lane) => (
                     <div className="event-lane gpu-event-lane" key={lane}>
                       {gpuEvents.filter((event) => event.lane === lane).map((event) => (
-                        <div
+                        <button
+                          type="button"
                           key={event.id}
-                          className={`gpu-event ${event.kind}`}
+                          className={`gpu-event ${event.kind} ${selectedEventId === event.id ? "is-active" : ""}`}
                           style={{ left: eventLeft(event.start), width: eventWidth(event.duration) }}
+                          onClick={() => setSelectedEventId(event.id)}
                           title={`${event.name} · ${(event.duration / 100 * tree.duration).toFixed(2)} ms`}
                         >
                           <span>{event.name}</span>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   ))}
@@ -382,7 +387,7 @@ export default function TraceViewer() {
 
           <aside className="inspector">
             <div className="inspector-heading">
-              <p className="eyebrow">SELECTION</p>
+              <p className="eyebrow">{selectedSource} EVENT</p>
               <span className={`kind-dot ${selectedEvent.kind}`} />
             </div>
             <h3>{selectedEvent.name}</h3>
@@ -390,11 +395,11 @@ export default function TraceViewer() {
             <dl className="event-stats">
               <div><dt>Start</dt><dd>{(selectedEvent.start / 100 * tree.duration).toFixed(2)} ms</dd></div>
               <div><dt>Duration</dt><dd>{(selectedEvent.duration / 100 * tree.duration).toFixed(2)} ms</dd></div>
-              <div><dt>Self time</dt><dd>{(selectedEvent.duration / 100 * tree.duration * 0.18).toFixed(2)} ms</dd></div>
-              <div><dt>Depth</dt><dd>{selectedEvent.lane}</dd></div>
+              <div><dt>{selectedGpuEvent ? "Stream" : "Self time"}</dt><dd>{selectedGpuEvent ? gpuLaneNames[selectedEvent.lane].replace("GPU 0 · ", "") : `${(selectedEvent.duration / 100 * tree.duration * 0.18).toFixed(2)} ms`}</dd></div>
+              <div><dt>{selectedGpuEvent ? "Device" : "Depth"}</dt><dd>{selectedGpuEvent ? "cuda:0" : selectedEvent.lane}</dd></div>
             </dl>
             <div className="arg-block">
-              <span>device</span><code>cuda:0</code>
+              <span>source</span><code>{selectedSource.toLowerCase()}</code>
               <span>rank</span><code>109</code>
               <span>correlation</span><code>#{88210 + selectedEvent.lane * 29}</code>
             </div>

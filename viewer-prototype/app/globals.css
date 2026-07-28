@@ -594,7 +594,9 @@ dd {
 .gpu-event {
   top: 7px;
   height: 23px;
+  border: 1px solid transparent;
   line-height: 23px;
+  cursor: pointer;
 }
 
 .gpu-event.kernel {
@@ -610,6 +612,17 @@ dd {
 .gpu-event.memory {
   background: rgba(155, 130, 207, 0.28);
   color: #d7c6f1;
+}
+
+.gpu-event:hover,
+.gpu-event.is-active {
+  z-index: 3;
+  filter: brightness(1.28);
+}
+
+.gpu-event.is-active {
+  border-color: #f5f7f1;
+  box-shadow: 0 0 0 1px rgba(245, 247, 241, 0.16);
 }
 
 .correlation-lines i {
@@ -642,6 +655,9 @@ dd {
 .kind-dot.compute { background: var(--orange); }
 .kind-dot.communication { background: var(--yellow); }
 .kind-dot.runtime { background: var(--purple); }
+.kind-dot.kernel { background: var(--teal); }
+.kind-dot.collective { background: var(--yellow); }
+.kind-dot.memory { background: var(--purple); }
 
 .inspector h3 {
   margin: 4px 0 8px;

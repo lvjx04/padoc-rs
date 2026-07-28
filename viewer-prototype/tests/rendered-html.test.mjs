@@ -32,6 +32,11 @@ test("server-renders the PADOC viewer prototype", async () => {
   assert.match(html, /One tree in detail/);
   assert.match(html, /MATERIALIZED TREE/);
   assert.match(html, /PROTOTYPE ESTIMATE/);
+  assert.match(html, /ARGS/);
+  assert.match(html, /11(?:<!-- -->)? fields/);
+  assert.match(html, /External id/);
+  assert.match(html, /World size/);
+  assert.match(html, /Tensor numel/);
   assert.doesNotMatch(html, /Your site is taking shape/);
   assert.doesNotMatch(html, /react-loading-skeleton/);
 });

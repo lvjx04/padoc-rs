@@ -15,6 +15,14 @@ type TreeSummary = {
   density: number[];
 };
 
+type ArgValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ArgValue[]
+  | { [key: string]: ArgValue };
+
 type TraceEvent = {
   id: string;
   name: string;
@@ -23,6 +31,7 @@ type TraceEvent = {
   lane: number;
   kind: "framework" | "compute" | "communication" | "runtime";
   detail: string;
+  args: Record<string, ArgValue>;
 };
 
 type GpuEvent = {
@@ -33,6 +42,7 @@ type GpuEvent = {
   lane: number;
   kind: "kernel" | "collective" | "memory";
   detail: string;
+  args: Record<string, ArgValue>;
 };
 
 const trees: TreeSummary[] = [
@@ -110,7 +120,7 @@ const trees: TreeSummary[] = [
   },
 ];
 
-const eventTemplate: Omit<TraceEvent, "id">[] = [
+const eventTemplate: Omit<TraceEvent, "id" | "args">[] = [
   { name: "ProfilerStep", start: 0, duration: 100, lane: 0, kind: "framework", detail: "PyTorch profiler iteration boundary" },
   { name: "train_step", start: 1.2, duration: 97.1, lane: 1, kind: "framework", detail: "Forward, backward, optimizer and scheduler" },
   { name: "model.forward", start: 3.4, duration: 38.7, lane: 2, kind: "framework", detail: "Distributed transformer forward pass" },
@@ -133,7 +143,7 @@ const eventTemplate: Omit<TraceEvent, "id">[] = [
   { name: "cudaLaunchKernel", start: 89.2, duration: 4.3, lane: 3, kind: "runtime", detail: "CUDA runtime dispatch" },
 ];
 
-const gpuTemplate: Omit<GpuEvent, "id">[] = [
+const gpuTemplate: Omit<GpuEvent, "id" | "args">[] = [
   { name: "embedding_kernel", start: 4.9, duration: 3.8, lane: 0, kind: "kernel", detail: "Embedding lookup dispatched from aten::embedding" },
   { name: "cublasGemmEx", start: 12.1, duration: 3.4, lane: 0, kind: "kernel", detail: "QKV projection matrix multiplication" },
   { name: "flash_fwd", start: 16.8, duration: 6.2, lane: 1, kind: "kernel", detail: "Fused FlashAttention forward kernel" },
@@ -157,6 +167,7 @@ function buildEvents(treeIndex: number): TraceEvent[] {
     id: `${treeIndex}-cpu-${index}`,
     start: Math.min(98, event.start + (index % 3 === 0 ? drift : 0)),
     duration: Math.max(1, event.duration * (1 + ((treeIndex + index) % 5 - 2) * 0.012)),
+    args: buildCpuArgs(event, index, treeIndex),
   }));
 }
 
@@ -167,7 +178,119 @@ function buildGpuEvents(treeIndex: number): GpuEvent[] {
     id: `${treeIndex}-gpu-${index}`,
     start: event.start + (index % 2 ? drift : 0),
     duration: event.duration * (1 + ((treeIndex + index) % 3 - 1) * 0.025),
+    args: buildGpuArgs(event, index, treeIndex),
   }));
+}
+
+function buildCpuArgs(
+  event: Omit<TraceEvent, "id" | "args">,
+  index: number,
+  treeIndex: number,
+): Record<string, ArgValue> {
+  const externalId = 184_200_000 + treeIndex * 1000 + index;
+  const common: Record<string, ArgValue> = {
+    "External id": externalId,
+    "Record function id": 740_000 + index,
+    "Sequence number": event.name.includes("backward") ? 3912 + index : -1,
+    "Fwd thread id": event.name.includes("Backward") || event.name.includes("backward") ? 12894 : 0,
+    "Ev Idx": index,
+  };
+
+  if (event.kind === "compute") {
+    return {
+      ...common,
+      "Concrete Inputs": ["", "", "false"],
+      "Input type": ["float", "float"],
+      "Input Dims": [[4096, 4096], [4096, 11008]],
+      "Input Strides": [[4096, 1], [11008, 1]],
+      correlation: 88210 + index * 29,
+      "Call stack": "torch/nn/modules/module.py(1762): _call_impl → torch/autograd/profiler.py(750): record_function",
+    };
+  }
+
+  if (event.kind === "communication") {
+    return {
+      ...common,
+      correlation: 88210 + index * 29,
+      "Collective name": event.name,
+      "Process group": "tensor_parallel_group",
+      "World size": 256,
+      "Tensor dtype": "float32",
+      "Tensor numel": 4_194_304,
+    };
+  }
+
+  if (event.kind === "runtime") {
+    return {
+      ...common,
+      correlation: 88210 + index * 29,
+      "CUDA device": 0,
+      "CUDA context": 1,
+      "CUDA stream": 7,
+    };
+  }
+
+  return {
+    ...common,
+    "Python module id": 8100 + index,
+    "Module hierarchy": `Qwen3ForCausalLM.${event.name}`,
+    "Call stack": "trainer.py(418): training_step → torch/nn/modules/module.py(1751): _wrapped_call_impl",
+  };
+}
+
+function buildGpuArgs(
+  event: Omit<GpuEvent, "id" | "args">,
+  index: number,
+  treeIndex: number,
+): Record<string, ArgValue> {
+  const common: Record<string, ArgValue> = {
+    "External id": 184_200_000 + treeIndex * 1000 + index,
+    correlation: 88210 + index * 29,
+    stream: event.lane === 2 ? 12 : event.lane === 1 ? 7 : 1,
+    context: 1,
+    device: 0,
+    queued: 9 + index,
+  };
+
+  if (event.kind === "collective") {
+    return {
+      ...common,
+      "Collective name": event.name,
+      "Process group": "tensor_parallel_group",
+      "World size": 256,
+      dtype: "float32",
+      count: 4_194_304,
+      "Bytes transferred": 16_777_216,
+    };
+  }
+
+  if (event.kind === "memory") {
+    return {
+      ...common,
+      "Copy kind": "Device to Device",
+      "Source device": 0,
+      "Destination device": 0,
+      bytes: 67_108_864,
+      "Memory bandwidth (GB/s)": 1382.7,
+    };
+  }
+
+  return {
+    ...common,
+    grid: [128, 32, 1],
+    block: [256, 1, 1],
+    "Registers per thread": 64,
+    "Shared memory": 0,
+    "Blocks per SM": 2,
+    "Est. achieved occupancy %": 50,
+  };
+}
+
+function formatArg(value: ArgValue): string {
+  if (typeof value === "string") return value;
+  if (value === null) return "null";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 export default function TraceViewer() {
@@ -183,6 +306,15 @@ export default function TraceViewer() {
   const selectedGpuEvent = gpuEvents.find((event) => event.id === selectedEventId);
   const selectedEvent = selectedCpuEvent ?? selectedGpuEvent ?? events[0];
   const selectedSource = selectedGpuEvent ? "GPU" : "CPU";
+  const selectedCategory = selectedGpuEvent
+    ? selectedEvent.kind === "collective" ? "kernel" : selectedEvent.kind
+    : selectedEvent.kind === "framework" ? "python_function"
+      : selectedEvent.kind === "compute" ? "cpu_op"
+        : selectedEvent.kind === "communication" ? "user_annotation"
+          : "cuda_runtime";
+  const selectedTid = selectedGpuEvent
+    ? gpuLaneNames[selectedEvent.lane].replace("GPU 0 · ", "")
+    : "CPU thread 12894";
 
   const focusTree = (index: number) => {
     setSelectedTree(index);
@@ -398,10 +530,28 @@ export default function TraceViewer() {
               <div><dt>{selectedGpuEvent ? "Stream" : "Self time"}</dt><dd>{selectedGpuEvent ? gpuLaneNames[selectedEvent.lane].replace("GPU 0 · ", "") : `${(selectedEvent.duration / 100 * tree.duration * 0.18).toFixed(2)} ms`}</dd></div>
               <div><dt>{selectedGpuEvent ? "Device" : "Depth"}</dt><dd>{selectedGpuEvent ? "cuda:0" : selectedEvent.lane}</dd></div>
             </dl>
-            <div className="arg-block">
-              <span>source</span><code>{selectedSource.toLowerCase()}</code>
-              <span>rank</span><code>109</code>
-              <span>correlation</span><code>#{88210 + selectedEvent.lane * 29}</code>
+            <div className="event-fields">
+              <div><span>cat</span><code>{selectedCategory}</code></div>
+              <div><span>ph</span><code>X</code></div>
+              <div><span>pid</span><code>342881</code></div>
+              <div><span>tid</span><code>{selectedTid}</code></div>
+              <div><span>id</span><code>{184200000 + selectedTree * 1000 + selectedEvent.lane}</code></div>
+              <div><span>rank</span><code>109</code></div>
+            </div>
+            <div className="args-heading">
+              <span>ARGS</span>
+              <small>{Object.keys(selectedEvent.args).length} fields</small>
+            </div>
+            <div className="arg-list">
+              {Object.entries(selectedEvent.args).map(([key, value]) => {
+                const formatted = formatArg(value);
+                return (
+                  <div key={key}>
+                    <span>{key}</span>
+                    <code title={formatted}>{formatted}</code>
+                  </div>
+                );
+              })}
             </div>
           </aside>
         </div>

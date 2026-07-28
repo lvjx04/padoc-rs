@@ -430,8 +430,8 @@ dd {
 
 .viewer-grid {
   display: grid;
-  grid-template-columns: 145px minmax(0, 1fr) 235px;
-  min-height: 441px;
+  grid-template-columns: 145px minmax(0, 1fr) 310px;
+  height: 520px;
 }
 
 .lane-labels {
@@ -635,8 +635,11 @@ dd {
 
 .inspector {
   padding: 18px;
+  overflow-y: auto;
   border-left: 1px solid var(--line);
   background: #111719;
+  scrollbar-color: #394547 #131a1c;
+  scrollbar-width: thin;
 }
 
 .inspector-heading {
@@ -693,22 +696,91 @@ dd {
   font-size: 10px;
 }
 
-.arg-block {
+.event-fields {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px 12px;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
   margin-top: 18px;
-  padding: 11px;
   border: 1px solid #263033;
   border-radius: 4px;
   background: #0d1315;
-  color: #6e7b79;
-  font-size: 9px;
+  overflow: hidden;
 }
 
-.arg-block code {
+.event-fields div {
+  min-width: 0;
+  padding: 9px 10px;
+  border-right: 1px solid #20292b;
+  border-bottom: 1px solid #20292b;
+}
+
+.event-fields div:nth-child(even) {
+  border-right: 0;
+}
+
+.event-fields div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.event-fields span,
+.arg-list span {
+  display: block;
+  margin-bottom: 5px;
+  color: #6e7b79;
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.event-fields code,
+.arg-list code {
+  display: block;
+  overflow: hidden;
   color: #a9b2b0;
   font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.args-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 20px 1px 8px;
+  color: #7d8987;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.args-heading small {
+  color: #586462;
+  font-size: 8px;
+  letter-spacing: 0;
+}
+
+.arg-list {
+  border: 1px solid #263033;
+  border-radius: 4px;
+  background: #0d1315;
+  overflow: hidden;
+}
+
+.arg-list div {
+  min-width: 0;
+  padding: 9px 10px;
+  border-bottom: 1px solid #20292b;
+}
+
+.arg-list div:last-child {
+  border-bottom: 0;
+}
+
+.arg-list code {
+  color: #c2cac7;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .memory-strip {
@@ -815,6 +887,7 @@ input:focus-visible {
 
   .viewer-grid {
     grid-template-columns: 125px minmax(540px, 1fr);
+    height: auto;
     overflow-x: auto;
   }
 
